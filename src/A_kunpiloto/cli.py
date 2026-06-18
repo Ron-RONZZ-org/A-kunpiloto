@@ -13,7 +13,7 @@ import typer
 from typing_extensions import Annotated
 
 from A import info, error, tr_multi
-from A.core.ai import get_provider
+from A.core.ai_config import get_configured_provider
 from A.core.providers import LLMProvider
 
 from A_kunpiloto.config import KUNPILOTO_SCHEMA
@@ -96,21 +96,27 @@ def _build_session(
             "Aucun module A trouvé. Installez au moins un module.",
         ))
 
-    # Initialize provider
+    # Initialize provider — uses shared A-core provider config
+    # (respects providers configured via A-agento)
     try:
         provider_kwargs = {}
         if session.config.get("model"):
             provider_kwargs["model"] = session.config["model"]
-        session.provider = get_provider(
-            session.config["provider"],
+        if session.config.get("temperature"):
+            provider_kwargs["temperature"] = session.config["temperature"]
+
+        # If user passed --provizanto, resolve that.
+        # Otherwise, auto-fallback through prioritato order.
+        session.provider = get_configured_provider(
+            ref=provider_type,
             **provider_kwargs,
         )
-        session.provider_type = session.config["provider"]
-    except Exception as exc:
+        session.provider_type = session.provider.name or provider_type or "unknown"
+    except ValueError as exc:
         error(tr_multi(
-            f"Eraro dum inicializo de provizanto: {exc}",
-            f"Error initialising provider: {exc}",
-            f"Erreur lors de l'initialisation du fournisseur : {exc}",
+            f"Neniu provizanto havebla: {exc}",
+            f"No provider available: {exc}",
+            f"Aucun fournisseur disponible : {exc}",
         ))
         raise typer.Exit(1) from exc
 
