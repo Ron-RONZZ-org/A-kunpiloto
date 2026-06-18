@@ -22,7 +22,6 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.4.0",
 ]
-mcp = ["mcp>=1.0.0"]
 
 [project.entry-points."A.commands"]
 kunpiloto = "A_kunpiloto.cli:app"

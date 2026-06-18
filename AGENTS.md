@@ -6,9 +6,8 @@ This file extends [workspace AGENTS.md](../AGENTS.md).
 
 **A-kunpiloto depends on A-core** for:
 - `A` package imports (i18n, output)
+- `A.core.ai_config` — `get_configured_provider()`, shared provider config
 - `A.core.providers` — `LLMProvider`, `chat()`, `ToolCall`, `LLMResponse`
-- `A.core.ai` — `get_provider()`, `save_api_key()`, `get_api_key()`
-- `A.utils.interactive` — `confirm_action()`
 
 All source code must import from `A`, never duplicate utilities.
 
@@ -24,6 +23,8 @@ as LLM-callable tools through a Rich-based REPL.
 ```
 src/A_kunpiloto/
 ├── __init__.py          # Exports: app
+├── _display.py          # Rich panel display helpers
+├── _spinner.py          # Thinking indicator spinner
 ├── cli.py               # Typer app entry point
 ├── config.py            # Config schema
 ├── session.py           # Session state management
@@ -31,10 +32,10 @@ src/A_kunpiloto/
 ├── repl.py              # Rich interactive REPL loop
 ├── tools/
 │   ├── __init__.py      # Re-exports
+│   ├── _base.py         # ToolEntry dataclass, schema helpers
 │   ├── registry.py      # Module discovery, tool schema generation
 │   ├── executor.py      # Tool execution via CliRunner
 │   └── safety.py        # Write/read classification, confirm dialogs
-└── mcp.py               # Optional MCP server (extras)
 ```
 
 ## Code Standards
