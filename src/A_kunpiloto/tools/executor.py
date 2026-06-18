@@ -21,16 +21,18 @@ _runner = CliRunner()
 # Known CLI error patterns mapped to LLM-friendly messages.
 _ERROR_PATTERNS: dict[str, str] = {
     "No such command": (
-        "The module does not have that command. "
-        "Use '{module}_ls' or '{module}_serci' to find available commands."
+        "The command could not be found in module '{module}'. "
+        "Check the function names in the tool list — the expected name "
+        "may have a different prefix or be a subcommand of another group."
     ),
     "Missing argument": (
         "Missing required argument(s). Check the tool's parameter names "
         "and provide all required arguments."
     ),
     "No such option": (
-        "Unknown option. Check the tool's parameter names — "
-        "options use hyphens (--my-option) not underscores."
+        "Unknown option. The parameter name does not match the "
+        "tool's expected options. Check the tool definition for "
+        "the correct option names."
     ),
     "Error: Invalid value": (
         "Invalid value for a parameter. Check the expected types "
@@ -65,6 +67,29 @@ def format_structured_error(
     return stderr
 
 
+def _merge_injected_defaults(
+    args: dict[str, Any],
+    injected_defaults: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge injected defaults into args, preserving LLM-provided values.
+
+    The LLM's explicit args take priority over injected defaults, but
+    injected defaults fill in any values the LLM didn't specify.
+
+    Args:
+        args: The arguments from the LLM.
+        injected_defaults: Defaults from the tool schema.
+
+    Returns:
+        Merged args dict.
+    """
+    if not injected_defaults:
+        return args
+    merged = dict(injected_defaults)
+    merged.update(args)  # LLM values override injected defaults
+    return merged
+
+
 def execute_tool_call(
     entry: ToolEntry,
     args: dict[str, Any],
@@ -75,6 +100,9 @@ def execute_tool_call(
     By default runs in-process via CliRunner. When *standalone* is True,
     falls back to subprocess (useful when the module can't be imported
     cleanly in the current process).
+
+    Injected defaults from the tool entry (e.g. ``--stdout``) are merged
+    into *args* before execution, with explicit LLM args taking priority.
 
     Args:
         entry: The ToolEntry to execute.
@@ -87,14 +115,16 @@ def execute_tool_call(
             - "error": stderr content (str, empty on success).
             - "exit_code": int (0 = success).
     """
+    effective_args = _merge_injected_defaults(args, entry.injected_defaults)
     if standalone:
-        return _execute_via_subprocess(entry, args)
-    return _execute_via_cli_runner(entry, args)
+        return _execute_via_subprocess(entry, effective_args)
+    return _execute_via_cli_runner(entry, effective_args)
 
 
 def format_args_for_cli(
     args: dict[str, Any],
     positional_params: list[str] | None = None,
+    option_flags: dict[str, str] | None = None,
 ) -> list[str]:
     """Convert a dict of args to CLI arguments.
 
@@ -102,12 +132,18 @@ def format_args_for_cli(
     in the order specified by ``positional_params``. Remaining params
     are formatted as ``--option value``.
 
+    When *option_flags* is provided, it maps Python parameter names to
+    the actual CLI flag names defined in the Typer command (e.g.
+    ``{"from_addr": "--from"}``).  Without it, flags are derived from
+    parameter names (``from_addr`` → ``--from-addr``).
+
     Handles booleans (--flag for True, --no-flag for False), lists, and
     nested values as JSON strings.
 
     Args:
         args: The arguments dict.
         positional_params: Ordered list of positional param names.
+        option_flags: Optional map from param name to CLI flag.
 
     Returns:
         A list of CLI argument strings.
@@ -125,13 +161,19 @@ def format_args_for_cli(
     for key, value in args.items():
         if key in positional_set:
             continue
-        flag = f"--{key.replace('_', '-')}"
+
+        # Use the actual CLI flag if available, otherwise derive from param name
+        if option_flags and key in option_flags:
+            flag = option_flags[key]
+        else:
+            flag = f"--{key.replace('_', '-')}"
 
         if isinstance(value, bool):
             if value:
                 cli_args.append(flag)
             else:
-                cli_args.append(f"--no-{key.replace('_', '-')}")
+                # Typer auto-generates --no-<name> for boolean options
+                cli_args.append(f"--no-{flag[2:]}")
         elif isinstance(value, list):
             cli_args.append(flag)
             cli_args.append(json.dumps(value))
@@ -191,7 +233,11 @@ def _execute_via_cli_runner(
 
     cli_args = [
         *entry.args_prefix,
-        *format_args_for_cli(args, positional_params=entry.positional_params),
+        *format_args_for_cli(
+            args,
+            positional_params=entry.positional_params,
+            option_flags=entry.option_flags,
+        ),
     ]
 
     try:
@@ -236,7 +282,11 @@ def _execute_via_subprocess(
     cmd = [
         sys.executable, "-m", "A",
         *entry.args_prefix,
-        *format_args_for_cli(args, positional_params=entry.positional_params),
+        *format_args_for_cli(
+            args,
+            positional_params=entry.positional_params,
+            option_flags=entry.option_flags,
+        ),
     ]
 
     try:

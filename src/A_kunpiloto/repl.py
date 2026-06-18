@@ -36,6 +36,15 @@ from A_kunpiloto.result_store import (
     handle_read_result,
     make_tool_output,
 )
+from A_kunpiloto.session_store import (
+    edit_text,
+    generate_session_id,
+    list_sessions,
+    load_session,
+    write_assistant_message,
+    write_session_start,
+    write_user_message,
+)
 from A_kunpiloto.tools.executor import execute_tool_call
 from A_kunpiloto.tools.registry import ToolRegistry
 from A_kunpiloto.tools.file_tools import (
@@ -69,10 +78,12 @@ WELCOME = tr_multi(
 ║  Parolu nature por administri vian   ║
 ║  A-ekosistemon per AI.               ║
 ║                                      ║
-║  /exit  - fini                       ║
-║  /clear - nova konversacio           ║
-║  /help  - helpo                      ║
-║  /tools - listi haveblajn ilojn     ║
+║  /exit     - fini                    ║
+║  /clear    - nova konversacio        ║
+║  /sessions - listi konservitajn      ║
+║  /resume   - rekomenci seancon       ║
+║  /help     - helpo                   ║
+║  /tools    - listi haveblajn ilojn  ║
 ╚══════════════════════════════════════╝
 """,
     """
@@ -82,10 +93,12 @@ WELCOME = tr_multi(
 ║  Speak naturally to manage your     ║
 ║  A-ecosystem with AI assistance.    ║
 ║                                      ║
-║  /exit  - quit                       ║
-║  /clear - new conversation           ║
-║  /help  - help                       ║
-║  /tools - list available tools       ║
+║  /exit     - quit                    ║
+║  /clear    - new conversation        ║
+║  /sessions - list saved sessions     ║
+║  /resume   - resume a session        ║
+║  /help     - help                    ║
+║  /tools    - list available tools    ║
 ╚══════════════════════════════════════╝
 """,
     """
@@ -95,10 +108,12 @@ WELCOME = tr_multi(
 ║  Parlez naturellement pour gérer    ║
 ║  votre écosystème A avec IA.        ║
 ║                                      ║
-║  /exit  - quitter                    ║
-║  /clear - nouvelle conversation      ║
-║  /help  - aide                       ║
-║  /tools - lister les outils          ║
+║  /exit     - quitter                 ║
+║  /clear    - nouvelle conversation   ║
+║  /sessions - lister les sessions     ║
+║  /resume   - reprendre une session   ║
+║  /help     - aide                    ║
+║  /tools    - lister les outils       ║
 ╚══════════════════════════════════════╝
 """,
 )
@@ -129,28 +144,34 @@ def _help_text(custom_commands: list[CommandDef]) -> str:
     return tr_multi(
         f"""
 Haveblaj komandoj:
-  /exit, /quit  - Eliri
-  /clear        - Komenci novan konversacion
-  /help         - Montri ĉi tiun helpon
-  /tools        - Listi ĉiujn haveblajn ilojn{custom_lines}
+  /exit, /quit    - Eliri
+  /clear          - Komenci novan konversacion
+  /sessions       - Listi konservitajn seancojn
+  /resume <id>    - Rekomenci antaŭan seancon
+  /help           - Montri ĉi tiun helpon
+  /tools          - Listi ĉiujn haveblajn ilojn{custom_lines}
 
 Simple: tajpu vian peton en natura lingvo.
 """,
         f"""
 Available commands:
-  /exit, /quit  - Exit
-  /clear        - Start a new conversation
-  /help         - Show this help
-  /tools        - List all available tools{custom_lines}
+  /exit, /quit    - Exit
+  /clear          - Start a new conversation
+  /sessions       - List saved sessions
+  /resume <id>    - Resume a previous session
+  /help           - Show this help
+  /tools          - List all available tools{custom_lines}
 
 Simply type your request in natural language.
 """,
         f"""
 Commandes disponibles :
-  /exit, /quit  - Quitter
-  /clear        - Nouvelle conversation
-  /help         - Afficher cette aide
-  /tools        - Lister tous les outils{custom_lines}
+  /exit, /quit    - Quitter
+  /clear          - Nouvelle conversation
+  /sessions       - Lister les sessions sauvegardées
+  /resume <id>    - Reprendre une session antérieure
+  /help           - Afficher cette aide
+  /tools          - Lister tous les outils{custom_lines}
 
 Tapez simplement votre demande en langage naturel.
 """,
@@ -208,6 +229,7 @@ class REPL:
         self._temperature = temperature
         self._custom_commands = custom_commands or []
         self._config = config or {}
+        self._session_id: str = ""
         self._history = self._build_history()
 
         # Result store for large tool outputs
@@ -259,6 +281,7 @@ class REPL:
 
     def run(self) -> None:
         """Start the interactive REPL loop."""
+        self._start_new_session()
         display_welcome(WELCOME)
 
         while True:
@@ -278,8 +301,14 @@ class REPL:
                 self._handle_command(text)
                 continue
 
+            # Paste confirmation: give user chance to review/edit pasted content
+            text = self._handle_pasted_input(text)
+            if text is None:
+                continue  # User cancelled
+
             # Normal turn
             self._history.add_user(text)
+            self._write_user_message(text)
             self._process_turn()
 
     # ------------------------------------------------------------------
@@ -323,11 +352,12 @@ class REPL:
             reasoning = getattr(response, "reasoning_content", None)
 
             if not response.tool_calls:
-                # Pure text response — display and finish
+                # Pure text response — display, persist, and finish
                 self._history.add_assistant(
                     content=response.content,
                     reasoning_content=reasoning,
                 )
+                self._write_assistant_message(response.content)
                 display_assistant(response.content)
                 return
 
@@ -376,6 +406,192 @@ class REPL:
         )
 
     # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def _start_new_session(self) -> None:
+        """Generate a new session ID and record the session start."""
+        self._session_id = generate_session_id()
+        metadata: dict[str, Any] = {}
+        try:
+            metadata["model"] = str(self._provider.model if hasattr(self._provider, "model") else "")
+        except Exception:
+            pass
+        write_session_start(self._session_id, metadata)
+
+    # ------------------------------------------------------------------
+    # Paste confirmation
+    # ------------------------------------------------------------------
+
+    _PASTE_MIN_LINES = 2
+    _PASTE_MIN_CHARS = 300
+
+    @staticmethod
+    def _is_paste(text: str) -> bool:
+        """Heuristic: detect if text looks like pasted content.
+
+        Returns True if the text is multi-line or unusually long for
+        typed input.
+        """
+        return "\n" in text or len(text) > REPL._PASTE_MIN_CHARS
+
+    def _confirm_or_edit_paste(self, text: str) -> str | None:
+        """Show a paste preview and let the user confirm, edit, or cancel.
+
+        Args:
+            text: The pasted text.
+
+        Returns:
+            The (possibly edited) text, or None if cancelled.
+        """
+        from rich.panel import Panel
+
+        _console.print()
+        _console.print(Panel(
+            text if len(text) < 500 else text[:500] + f"\n... ({len(text)} chars total)",
+            title=tr_multi(
+                "Algluita enhavo",
+                "Pasted content",
+                "Contenu coll\u00e9",
+            ),
+            border_style="yellow",
+        ))
+        choice = Prompt.ask(
+            tr_multi(
+                "[S]endi / [R]edakti / [N]uligi",
+                "[S]end / [E]dit / [C]ancel",
+                "[E]nvoyer / [M]odifier / [A]nnuler",
+            ),
+            default="s",
+        )
+        c = choice.strip().lower()
+        if c in ("s", "send", ""):
+            return text
+        if c in ("r", "e", "edit", "redakti"):
+            edited = edit_text(text)
+            if edited is not None and edited.strip():
+                _console.print(Panel(
+                    edited if len(edited) < 500 else edited[:500] + f"\n... ({len(edited)} chars total)",
+                    title=tr_multi("Redaktita", "Edited", "Modifi\u00e9"),
+                    border_style="green",
+                ))
+                return edited
+            return text  # Editor failed, use original
+        # Cancelled
+        _console.print(
+            tr_multi(
+                "[dim]Nuligita.[/dim]",
+                "[dim]Cancelled.[/dim]",
+                "[dim]Annul\u00e9.[/dim]",
+            )
+        )
+        return None
+
+    # ------------------------------------------------------------------
+    # Session commands: /sessions, /resume
+    # ------------------------------------------------------------------
+
+    def _cmd_sessions(self) -> None:
+        """Handle the /sessions command — list recent sessions."""
+        sessions = list_sessions(limit=15)
+        if not sessions:
+            _console.print(tr_multi(
+                "[dim]Neniuj konservitaj seancoj.[/dim]",
+                "[dim]No saved sessions.[/dim]",
+                "[dim]Aucune session sauvegard\u00e9e.[/dim]",
+            ))
+            return
+
+        from rich.table import Table
+        from rich.box import SIMPLE as BOX_SIMPLE
+
+        table = Table(
+            show_header=True, box=BOX_SIMPLE, header_style="bold",
+            title=tr_multi("Konservitaj seancoj", "Saved sessions", "Sessions sauvegard\u00e9es"),
+        )
+        table.add_column("ID", no_wrap=True, style="cyan")
+        table.add_column(tr_multi("Dato", "Date", "Date"), no_wrap=True)
+        table.add_column(tr_multi("Mesa\u0115oj", "Msgs", "Msg"), justify="right")
+        table.add_column(tr_multi("Unua mesa\u0115o", "First message", "Premier message"))
+
+        for s in sessions:
+            tid = s.get("session_id", "?")
+            ts = s.get("timestamp", "")[:19]  # truncate microseconds
+            count = str(s.get("message_count", 0))
+            first = s.get("first_message", "") or "\u2014"
+            table.add_row(tid, ts, count, first)
+
+        _console.print(table)
+
+    def _cmd_resume(self, session_id: str) -> None:
+        """Handle the /resume command — load a session's messages.
+
+        Args:
+            session_id: The session ID to resume.
+        """
+        messages = load_session(session_id)
+        if not messages:
+            _console.print(tr_multi(
+                f"[red]Seanco ne trovita: {session_id}[/red]",
+                f"[red]Session not found: {session_id}[/red]",
+                f"[red]Session non trouv\u00e9e : {session_id}[/red]",
+            ))
+            return
+
+        # Start a new session context
+        self._history = self._build_history()
+        self._result_store.clear()
+
+        # Inject loaded messages
+        loaded_count = 0
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                self._history._messages.append({"role": "user", "content": content})
+                loaded_count += 1
+            elif role == "assistant":
+                self._history._messages.append({"role": "assistant", "content": content})
+                loaded_count += 1
+
+        # Prepend a system note about resumed context
+        resume_note = tr_multi(
+            f"La sekva konversacio estas rekomencita el seanco {session_id}. "
+            f"Anta\u016daj ilo-rezultoj ne plu haveblas. Demandu la uzanton, kion li/\u015di volas fari.",
+            f"The following conversation is resumed from session {session_id}. "
+            f"Previous tool results are no longer available. Ask the user what they'd like to do.",
+            f"La conversation suivante reprend la session {session_id}. "
+            f"Les r\u00e9sultats d'outils pr\u00e9c\u00e9dents ne sont plus disponibles. "
+            f"Demandez \u00e0 l'utilisateur ce qu'il/elle souhaite faire.",
+        )
+        # Insert after system prompt (index 1)
+        self._history._messages.insert(
+            1,
+            {"role": "system", "content": resume_note},
+        )
+
+        _console.print(tr_multi(
+            f"[green]Rekomencis seancon {session_id} kun {loaded_count} mesa\u0115oj.[/green]",
+            f"[green]Resumed session {session_id} with {loaded_count} messages.[/green]",
+            f"[green]Session {session_id} reprise avec {loaded_count} messages.[/green]",
+        ))
+
+    def _handle_pasted_input(self, text: str) -> str | None:
+        """Handle user input that looks like pasted content.
+
+        Args:
+            text: The raw user input.
+
+        Returns:
+            The confirmed/edited text, or None if cancelled.
+        """
+        if self._is_paste(text):
+            return self._confirm_or_edit_paste(text)
+        return text
+
+    # ------------------------------------------------------------------
     # Thinking indicator (simple thread-based spinner)
     # ------------------------------------------------------------------
 
@@ -391,6 +607,32 @@ class REPL:
         if self._spinner:
             self._spinner.stop()
             self._spinner = None
+
+    def _write_user_message(self, content: str) -> None:
+        """Persist a user message to the session store.
+
+        Args:
+            content: The user message text.
+        """
+        if self._session_id:
+            try:
+                write_user_message(self._session_id, content)
+            except Exception:
+                pass  # Non-critical
+
+    def _write_assistant_message(self, content: str) -> None:
+        """Persist an assistant text message to the session store.
+
+        Only called for pure-text responses (no tool calls).
+
+        Args:
+            content: The assistant message text.
+        """
+        if self._session_id and content:
+            try:
+                write_assistant_message(self._session_id, content)
+            except Exception:
+                pass  # Non-critical
 
     def _handle_tool_call(self, tc: ToolCall) -> dict[str, Any]:
         """Execute a single tool call with safety gate and result display.
@@ -437,7 +679,7 @@ class REPL:
             return result
 
         # Show brief "running" indicator
-        _console.print(f"  [dim]▶ {entry.display_path} ...[/dim]")
+        _console.print(f"  [dim]\u25b6 {entry.display_path} ...[/dim]")
 
         # Safety gate: for write operations, ask user
         if entry.is_write and not entry.handler:
@@ -489,12 +731,13 @@ class REPL:
         cmd = text.lower().strip()
 
         if cmd in ("/exit", "/quit", "/q"):
-            self._say(tr_multi("Ĝis!", "Bye!", "Au revoir !"))
+            self._say(tr_multi("\u011cis!", "Bye!", "Au revoir !"))
             raise SystemExit(0)
 
         elif cmd in ("/clear", "/new"):
             self._history = self._build_history()
             self._result_store.clear()
+            self._start_new_session()
             _console.print(
                 tr_multi(
                     "[dim]Nova konversacio.[/dim]",
@@ -509,6 +752,29 @@ class REPL:
         elif cmd in ("/tools", "/iloj"):
             display_tool_list(self._registry)
 
+        elif cmd in ("/sessions", "/seancoj"):
+            self._cmd_sessions()
+
+        elif cmd.startswith("/resume ") or cmd.startswith("/da\u016drigi "):
+            # Extract session ID from the command
+            parts = cmd.split(None, 1)
+            session_id = parts[1].strip() if len(parts) > 1 else ""
+            if session_id:
+                self._cmd_resume(session_id)
+            else:
+                _console.print(tr_multi(
+                    "[red]Uzu: /resume <seanca_id>[/red]",
+                    "[red]Usage: /resume <session_id>[/red]",
+                    "[red]Utilisation : /resume <session_id>[/red]",
+                ))
+
+        elif cmd == "/resume":
+            _console.print(tr_multi(
+                "[red]Uzu: /resume <seanca_id>[/red]",
+                "[red]Usage: /resume <session_id>[/red]",
+                "[red]Utilisation : /resume <session_id>[/red]",
+            ))
+
         else:
             # Try custom slash-commands
             parts = text[1:].strip().split()  # strip leading '/', split
@@ -519,6 +785,7 @@ class REPL:
             if matched is not None:
                 resolved = resolve_template(matched.template, cmd_args)
                 self._history.add_user(resolved)
+                self._write_user_message(resolved)
                 self._process_turn()
                 return
 

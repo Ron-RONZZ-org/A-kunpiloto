@@ -32,6 +32,11 @@ class ToolEntry:
         args_prefix: CLI arg prefix (e.g. ["retposto", "sendi"]).
         positional_params: Names of positional (Argument) params, in order.
         handler: Callable for built-in tools (None for CLI tools).
+        option_flags: Map from Python param name to actual CLI option flag
+            (e.g. ``{"from_addr": "--from", "limit": "--limo"}``).
+        injected_defaults: Defaults the executor should auto-apply before
+            calling the CLI. These override CLI defaults to make the command
+            LLM-friendly (e.g. ``{"stdout": True}`` to avoid opening editors).
     """
     name: str
     module_name: str
@@ -42,6 +47,8 @@ class ToolEntry:
     args_prefix: list[str] = field(default_factory=list)
     positional_params: list[str] = field(default_factory=list)
     handler: Callable[..., dict[str, Any]] | None = None
+    option_flags: dict[str, str] = field(default_factory=dict)
+    injected_defaults: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +162,122 @@ def is_positional_param(param: inspect.Parameter) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Interactive-only and force-on CLI flags
+# ---------------------------------------------------------------------------
+# Options whose flags match these patterns are automatically removed from
+# the LLM-visible schema — they open external programs or are meaningless
+# in the copilot context.
+_INTERACTIVE_ONLY_FLAGS: frozenset[str] = frozenset({
+    "--html",
+    "--open",
+    "--browser",
+})
+
+# Options that should always be forced on for LLM calls.  Removed from
+# schema and auto-injected by the executor.
+_LLM_FORCE_FLAGS: frozenset[str] = frozenset({
+    "--stdout",
+})
+
+
+def _get_cli_flag(param_default: Any) -> str | None:
+    """Extract the primary CLI flag from an OptionInfo descriptor.
+
+    Picks the first long flag (``--something``) from ``param_decls``.
+    Falls back to ``None`` if the param is not an OptionInfo or has no long flags.
+
+    Args:
+        param_default: The parameter's default value (may be OptionInfo).
+
+    Returns:
+        The CLI flag string (e.g. ``"--from"``), or None.
+    """
+    if not isinstance(param_default, OptionInfo):
+        return None
+    decls = param_default.param_decls
+    if not decls:
+        return None
+    # Prefer the first long flag (starts with --) if available
+    for d in decls:
+        if d.startswith("--"):
+            return d
+    # Fall back to the first declaration
+    return decls[0]
+
+
+def _flag_for_negation(flag: str) -> str:
+    """Derive the negation flag for a boolean option.
+
+    Typer auto-generates ``--no-<name>`` for every boolean option.
+    This strips the leading ``--`` and prepends ``--no-``.
+
+    Args:
+        flag: The positive CLI flag (e.g. ``"--legita"``).
+
+    Returns:
+        The negation flag (e.g. ``"--no-legita"``).
+    """
+    return f"--no-{flag[2:]}"
+
+
+def _is_interactive_only_flag(flag: str) -> bool:
+    """Check if a CLI flag is interactive-only (should be hidden from LLM).
+
+    Args:
+        flag: The CLI flag string (e.g. ``"--html"``).
+
+    Returns:
+        True if the flag is considered interactive-only.
+    """
+    return flag in _INTERACTIVE_ONLY_FLAGS
+
+
+def _is_llm_force_flag(flag: str) -> bool:
+    """Check if a CLI flag should be forced on for all LLM calls.
+
+    Args:
+        flag: The CLI flag string (e.g. ``"--stdout"``).
+
+    Returns:
+        True if the flag should be auto-injected.
+    """
+    return flag in _LLM_FORCE_FLAGS
+
+
+def _injected_default_for_flag(flag: str, param_annotation: type) -> Any:
+    """Return the sensible default value for a force-on flag.
+
+    Interactive-only flags (``--html``, ``--browser``) → ``False`` (don't open).
+    Force-on flags (``--stdout``) → ``True`` (always print to stdout).
+
+    Args:
+        flag: The CLI flag string.
+        param_annotation: The type annotation of the parameter.
+
+    Returns:
+        The value to inject.
+    """
+    if flag in _LLM_FORCE_FLAGS:
+        if param_annotation is bool:
+            return True
+        return "true"  # string-typed force flags (unusual but safe)
+    # Interactive-only flags: disable by default
+    if param_annotation is bool:
+        return False
+    return ""
+
+
 def build_tool_schema(
     callback: Any,
     tool_name: str,
     module_name: str,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], dict[str, str], dict[str, Any]]:
     """Build an OpenAI-compatible tool schema from a Typer callback function.
+
+    Also returns a mapping from Python parameter names to their actual CLI
+    option flags, and defaults that the executor should auto-apply for
+    LLM-friendly operation (e.g. forcing ``--stdout``).
 
     Args:
         callback: The command callback function.
@@ -168,11 +285,14 @@ def build_tool_schema(
         module_name: The A-module name (for context).
 
     Returns:
-        A tuple of (schema_dict, positional_param_names).
+        A tuple of (schema_dict, positional_param_names, option_flags,
+        injected_defaults).
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
     positional: list[str] = []
+    option_flags: dict[str, str] = {}
+    injected_defaults: dict[str, Any] = {}
 
     sig = inspect.signature(callback)
     type_hints = get_type_hints(callback)
@@ -188,11 +308,26 @@ def build_tool_schema(
         if prop_schema is None:
             continue
 
-        properties[param_name] = prop_schema
-
         if is_positional_param(param):
             positional.append(param_name)
             required.append(param_name)
+            properties[param_name] = prop_schema
+        else:
+            # Extract the actual CLI flag for this option
+            flag = _get_cli_flag(param.default)
+            if flag:
+                option_flags[param_name] = flag
+
+                # Filter or force options that are meaningless in copilot context
+                if _is_interactive_only_flag(flag) or _is_llm_force_flag(flag):
+                    # Remove from schema — LLM should not see these
+                    # Injected default ensures correct CLI behaviour
+                    injected_defaults[param_name] = _injected_default_for_flag(
+                        flag, annotation,
+                    )
+                    continue
+
+            properties[param_name] = prop_schema
 
     description = ""
     if callback.__doc__:
@@ -216,7 +351,7 @@ def build_tool_schema(
     if required:
         schema["function"]["parameters"]["required"] = required
 
-    return schema, positional
+    return schema, positional, option_flags, injected_defaults
 
 
 # ---------------------------------------------------------------------------

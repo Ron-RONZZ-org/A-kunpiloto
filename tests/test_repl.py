@@ -369,3 +369,233 @@ print('OK: readline not available, but REPL loaded')
             f"stderr: {result.stderr}"
         )
         assert "OK:" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Paste confirmation tests
+# ---------------------------------------------------------------------------
+
+
+class TestPasteDetection:
+    """Test that the REPL correctly detects and handles pasted content."""
+
+    def test_is_paste_multi_line(self):
+        """Multi-line content should be detected as paste."""
+        assert REPL._is_paste("line1\nline2\nline3")
+
+    def test_is_paste_long_line(self):
+        """Single line over threshold should be detected as paste."""
+        long_line = "x" * (REPL._PASTE_MIN_CHARS + 1)
+        assert REPL._is_paste(long_line)
+
+    def test_is_paste_short_single_line(self):
+        """Short single line should NOT be detected as paste."""
+        assert not REPL._is_paste("Hello, how are you?")
+
+    def test_is_paste_empty(self):
+        """Empty string should not be paste."""
+        assert not REPL._is_paste("")
+
+    def test_is_paste_boundary(self):
+        """Exactly at threshold should NOT be paste (uses > not >=)."""
+        text = "x" * REPL._PASTE_MIN_CHARS
+        assert not REPL._is_paste(text)  # Strictly >, not >=
+
+    def test_is_paste_one_over_boundary(self):
+        """One char over threshold should be paste."""
+        text = "x" * (REPL._PASTE_MIN_CHARS + 1)
+        assert REPL._is_paste(text)
+
+    def test_handle_pasted_input_confirms(self, mock_provider, registry):
+        """Paste confirmation should be shown for multi-line input."""
+        from unittest.mock import patch
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+
+        with patch.object(r, "_confirm_or_edit_paste", return_value="modified text"):
+            result = r._handle_pasted_input("line1\nline2")
+            assert result == "modified text"
+
+    def test_handle_pasted_input_skips_normal(self, mock_provider, registry):
+        """Short single-line input should pass through without confirmation."""
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+        result = r._handle_pasted_input("Hello")
+        assert result == "Hello"
+
+
+# ---------------------------------------------------------------------------
+# Session management tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCommands:
+    """Test the /sessions and /resume slash commands."""
+
+    def test_sessions_empty(self, mock_provider, registry):
+        """Listing sessions when none exist should show empty message."""
+        from unittest.mock import patch
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+
+        with patch("A_kunpiloto.repl._console") as mock_console:
+            r._cmd_sessions()
+
+        # Should print a "no sessions" message
+        mock_console.print.assert_called_once()
+        text = str(mock_console.print.call_args[0][0])
+        assert "neniuj" in text.lower() or "no" in text.lower()
+
+    def test_sessions_with_data(self, mock_provider, registry, tmp_path):
+        """Listing sessions with data should show them in a table."""
+        from unittest.mock import patch
+
+        # Write a session entry
+        session_file = tmp_path / "sessions.jsonl"
+        with session_file.open("w", encoding="utf-8") as f:
+            f.write(
+                '{"type": "session_start", "session_id": "test_sess", '
+                '"timestamp": "2026-01-01T12:00:00"}\n'
+            )
+            f.write(
+                '{"type": "message", "session_id": "test_sess", '
+                '"role": "user", "content": "Hello"}\n'
+            )
+
+        with patch(
+            "A_kunpiloto.session_store._sessions_path",
+            return_value=session_file,
+        ):
+            from unittest.mock import MagicMock
+            mock_console = MagicMock()
+            r = REPL(
+                provider=mock_provider,
+                registry=registry,
+                max_turns=15,
+                temperature=0.7,
+            )
+            with patch("A_kunpiloto.repl._console", mock_console):
+                r._cmd_sessions()
+
+            # Should print a table (multiple calls to console.print)
+            assert mock_console.print.call_count >= 1
+
+    def test_resume_nonexistent(self, mock_provider, registry):
+        """Resuming a nonexistent session should show error."""
+        from unittest.mock import patch
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+
+        with patch("A_kunpiloto.repl._console") as mock_console:
+            r._cmd_resume("nonexistent")
+
+        mock_console.print.assert_called_once()
+        text = str(mock_console.print.call_args[0][0])
+        assert "ne trovita" in text.lower() or "not found" in text.lower()
+
+    def test_resume_loads_messages(self, mock_provider, registry, tmp_path):
+        """Resuming should load messages into history."""
+        from unittest.mock import patch, MagicMock
+
+        session_file = tmp_path / "sessions.jsonl"
+        with session_file.open("w", encoding="utf-8") as f:
+            f.write(
+                '{"type": "session_start", "session_id": "sess_1", '
+                '"timestamp": "2026-01-01T12:00:00"}\n'
+            )
+            f.write(
+                '{"type": "message", "session_id": "sess_1", '
+                '"role": "user", "content": "Hello from past"}\n'
+            )
+            f.write(
+                '{"type": "message", "session_id": "sess_1", '
+                '"role": "assistant", "content": "Reply from past"}\n'
+            )
+
+        with patch(
+            "A_kunpiloto.session_store._sessions_path",
+            return_value=session_file,
+        ):
+            mock_console = MagicMock()
+            r = REPL(
+                provider=mock_provider,
+                registry=registry,
+                max_turns=15,
+                temperature=0.7,
+            )
+            with patch("A_kunpiloto.repl._console", mock_console):
+                r._cmd_resume("sess_1")
+
+            # History should contain loaded messages
+            history = r._history.messages
+            contents = [m["content"] for m in history]
+            assert any("Hello from past" in c for c in contents)
+            assert any("Reply from past" in c for c in contents)
+
+            # Should have resume note system message
+            system_msgs = [m for m in history if m["role"] == "system"]
+            resume_notes = [m for m in system_msgs if "resumed" in m["content"].lower()
+                            or "rekomencita" in m["content"].lower()
+                            or "reprend" in m["content"].lower()]
+            assert len(resume_notes) >= 1
+
+    def test_start_new_session(self, mock_provider, registry, tmp_path):
+        """Starting a new session should generate an ID and write to store."""
+        from unittest.mock import patch
+
+        session_file = tmp_path / "sessions.jsonl"
+        with patch(
+            "A_kunpiloto.session_store._sessions_path",
+            return_value=session_file,
+        ):
+            r = REPL(
+                provider=mock_provider,
+                registry=registry,
+                max_turns=15,
+                temperature=0.7,
+            )
+            r._start_new_session()
+            assert r._session_id != ""
+            assert session_file.exists()
+
+    def test_clear_starts_new_session(self, mock_provider, registry, tmp_path):
+        """/clear should start a new session."""
+        from unittest.mock import patch
+
+        session_file = tmp_path / "sessions.jsonl"
+        with patch(
+            "A_kunpiloto.session_store._sessions_path",
+            return_value=session_file,
+        ):
+            from unittest.mock import MagicMock
+            r = REPL(
+                provider=mock_provider,
+                registry=registry,
+                max_turns=15,
+                temperature=0.7,
+            )
+            old_id = r._session_id
+            with patch("A_kunpiloto.repl._console", MagicMock()):
+                r._handle_command("/clear")
+            assert r._session_id != ""
+            # Session ID should have changed
+            assert r._session_id != old_id if old_id else True

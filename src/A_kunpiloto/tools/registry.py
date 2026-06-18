@@ -22,6 +22,14 @@ from A_kunpiloto.tools._base import (
     normalize_tool_name,
 )
 
+# Modules whose tools should not be exposed through the copilot.
+# A-agento is redundant: calling an LLM from within an LLM makes no sense.
+# A-kunpiloto self-discovery is also pointless (it would register itself).
+_MODULE_DENYLIST: frozenset[str] = frozenset({
+    "agento",
+    "kunpiloto",
+})
+
 
 def _get_app_help_text(app: typer.Typer) -> str:
     """Extract the module-level help text from a Typer app.
@@ -113,6 +121,11 @@ class ToolRegistry:
 
         for ep in importlib.metadata.entry_points(group="A.commands"):
             module_name = ep.name
+
+            # Skip denylisted modules (e.g. A-agento — redundant in copilot)
+            if module_name in _MODULE_DENYLIST:
+                continue
+
             try:
                 app = ep.load()
             except Exception:
@@ -250,18 +263,41 @@ class ToolRegistry:
         for group_info in app.registered_groups:
             if group_info.hidden:
                 continue
-            name = group_info.name or ""
+
+            # Resolve group name.
+            # When add_typer() is called without an explicit name= argument,
+            # Typer 0.12+ stores DefaultPlaceholder(value=None) in
+            # group_info.name instead of the sub-app's actual name.
+            # Fall back to the sub-app's .info.name (the canonical source).
+            raw_name = group_info.name
+            if isinstance(raw_name, DefaultPlaceholder):
+                if group_info.typer_instance and group_info.typer_instance.info:
+                    raw_name = group_info.typer_instance.info.name
+                else:
+                    raw_name = ""
+            name: str = raw_name if isinstance(raw_name, str) else ""
+
             sub_app = group_info.typer_instance
             if sub_app is None:
                 continue
             has_commands = True
             clean_name = normalize_tool_name(name)
-            self._walk_typer_app(
-                app=sub_app,
-                module_name=module_name,
-                prefix=f"{prefix}_{clean_name}",
-                args_prefix=[*args_prefix, name],
-            )
+
+            # Avoid prefix pollution from empty-string group names
+            if name:
+                self._walk_typer_app(
+                    app=sub_app,
+                    module_name=module_name,
+                    prefix=f"{prefix}_{clean_name}",
+                    args_prefix=[*args_prefix, name],
+                )
+            else:
+                self._walk_typer_app(
+                    app=sub_app,
+                    module_name=module_name,
+                    prefix=prefix,
+                    args_prefix=args_prefix,
+                )
 
         # Flat app: no subcommands but has root callback with params
         if not has_commands and self._is_flat_app(app):
@@ -296,7 +332,7 @@ class ToolRegistry:
         if cmd_info.callback is None:
             return
 
-        schema, positional_params = build_tool_schema(
+        schema, positional_params, option_flags, injected_defaults = build_tool_schema(
             callback=cmd_info.callback,
             tool_name=full_name,
             module_name=module_name,
@@ -333,6 +369,8 @@ class ToolRegistry:
             is_write=is_write_command(command_name),
             args_prefix=[*args_prefix, command_name],
             positional_params=positional_params,
+            option_flags=option_flags,
+            injected_defaults=injected_defaults,
         )
 
         self._entries[full_name] = entry
@@ -393,7 +431,7 @@ class ToolRegistry:
             return
 
         tool_name = normalize_tool_name(prefix)
-        schema, positional_params = build_tool_schema(
+        schema, positional_params, option_flags, injected_defaults = build_tool_schema(
             callback=callback,
             tool_name=tool_name,
             module_name=module_name,
@@ -428,5 +466,7 @@ class ToolRegistry:
             is_write=is_write_command(tool_name),
             args_prefix=[],
             positional_params=positional_params,
+            option_flags=option_flags,
+            injected_defaults=injected_defaults,
         )
         self._entries[tool_name] = entry
