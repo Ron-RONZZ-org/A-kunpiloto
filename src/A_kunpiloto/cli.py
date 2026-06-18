@@ -201,6 +201,7 @@ def repl(
         max_turns=maks_pasoj,
         temperature=temperaturo,
         custom_commands=custom_commands,
+        config=session.config,
     )
 
     try:
