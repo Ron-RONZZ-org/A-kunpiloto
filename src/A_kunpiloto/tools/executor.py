@@ -18,6 +18,52 @@ from A_kunpiloto.tools.registry import ToolEntry
 
 _runner = CliRunner()
 
+# Known CLI error patterns mapped to LLM-friendly messages.
+_ERROR_PATTERNS: dict[str, str] = {
+    "No such command": (
+        "The module does not have that command. "
+        "Use '{module}_ls' or '{module}_serci' to find available commands."
+    ),
+    "Missing argument": (
+        "Missing required argument(s). Check the tool's parameter names "
+        "and provide all required arguments."
+    ),
+    "No such option": (
+        "Unknown option. Check the tool's parameter names — "
+        "options use hyphens (--my-option) not underscores."
+    ),
+    "Error: Invalid value": (
+        "Invalid value for a parameter. Check the expected types "
+        "(string, integer, boolean, etc.) and try again."
+    ),
+}
+
+
+def format_structured_error(
+    entry: ToolEntry,
+    stderr: str,
+) -> str:
+    """Convert raw CLI stderr into an LLM-friendly error message.
+
+    Args:
+        entry: The tool entry that was executed.
+        stderr: The raw stderr from the CLI execution.
+
+    Returns:
+        A cleaned-up error message the LLM can understand.
+    """
+    if not stderr:
+        return "Unknown error (exit code != 0)."
+
+    for pattern, template in _ERROR_PATTERNS.items():
+        if pattern in stderr:
+            return template.format(module=entry.module_name)
+
+    # Fallback: truncate raw error to 500 chars
+    if len(stderr) > 500:
+        return stderr[:500] + f"\n... (truncated, total {len(stderr)} chars)"
+    return stderr
+
 
 def execute_tool_call(
     entry: ToolEntry,
@@ -150,9 +196,12 @@ def _execute_via_cli_runner(
 
     try:
         result = _runner.invoke(app, cli_args)
+        error = result.stderr or ""
+        if result.exit_code and error:
+            error = format_structured_error(entry, error)
         return {
             "output": result.stdout or "",
-            "error": result.stderr or "",
+            "error": error,
             "exit_code": result.exit_code if result.exit_code is not None else 0,
         }
     except Exception as exc:
@@ -197,9 +246,12 @@ def _execute_via_subprocess(
             text=True,
             timeout=120,
         )
+        error = result.stderr or ""
+        if result.returncode and error:
+            error = format_structured_error(entry, error)
         return {
             "output": result.stdout,
-            "error": result.stderr,
+            "error": error,
             "exit_code": result.returncode,
         }
     except subprocess.TimeoutExpired:

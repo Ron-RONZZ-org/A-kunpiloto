@@ -30,6 +30,12 @@ from A_kunpiloto.commands import (
 )
 from A_kunpiloto.config import load_system_prompt
 from A_kunpiloto.history import ConversationHistory
+from A_kunpiloto.result_store import (
+    READ_RESULT_SCHEMA,
+    ResultStore,
+    handle_read_result,
+    make_tool_output,
+)
 from A_kunpiloto.tools.executor import execute_tool_call
 from A_kunpiloto.tools.registry import ToolRegistry
 from A_kunpiloto.tools.safety import confirm_write_operation
@@ -195,6 +201,25 @@ class REPL:
         self._custom_commands = custom_commands or []
         self._history = self._build_history()
 
+        # Result store for large tool outputs
+        self._result_store = ResultStore()
+        # Register the built-in read_result tool
+        self._register_builtin_tools()
+
+    def _register_builtin_tools(self) -> None:
+        """Register built-in tools (read_result, etc.) in the registry."""
+        from functools import partial
+
+        self._registry.register_builtin(
+            name="read_result",
+            description=(
+                "Read specific lines from a previous tool's output that "
+                "was too large to display inline."
+            ),
+            schema=READ_RESULT_SCHEMA,
+            handler=partial(handle_read_result, self._result_store),
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -228,15 +253,25 @@ class REPL:
     # Turn processing
     # ------------------------------------------------------------------
 
+    CONSECUTIVE_FAILURE_LIMIT: int = 3
+
     def _process_turn(self) -> None:
         """Process a single user turn with possible tool rounds."""
+        consecutive_failures = 0
+
         for turn in range(self._max_turns):
             # Show thinking spinner while waiting for LLM
             self._start_thinking()
 
+            # Build messages with result store context injected
+            messages = self._history.messages
+            result_context = self._result_store.get_context_message()
+            if result_context:
+                messages = messages + [result_context]
+
             try:
                 response = self._provider.chat(
-                    self._history.messages,
+                    messages=messages,
                     tools=self._registry.get_schemas(),
                     temperature=self._temperature,
                 )
@@ -278,9 +313,27 @@ class REPL:
                 reasoning_content=reasoning,
             )
 
-            # Execute each tool call
+            # Execute each tool call and track failures
             for tc in response.tool_calls:
-                self._handle_tool_call(tc)
+                result = self._handle_tool_call(tc)
+                if result and result.get("exit_code", 0) != 0:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+
+            # Abort if too many consecutive failures
+            if consecutive_failures >= self.CONSECUTIVE_FAILURE_LIMIT:
+                msg = tr_multi(
+                    "Renkontis plurajn erarojn. Bonvolu klarigi, kion "
+                    "vi volas fari alimaniere.",
+                    "Encountered several errors. Please clarify what "
+                    "you'd like to do differently.",
+                    "Plusieurs erreurs rencontrées. Veuillez clarifier "
+                    "ce que vous souhaitez faire autrement.",
+                )
+                display_assistant(msg)
+                self._history.add_assistant(content=msg)
+                return
 
             # Continue: provider will see tool results in next iteration
 
@@ -306,7 +359,7 @@ class REPL:
             self._spinner.stop()
             self._spinner = None
 
-    def _handle_tool_call(self, tc: ToolCall) -> None:
+    def _handle_tool_call(self, tc: ToolCall) -> dict[str, Any]:
         """Execute a single tool call with safety gate and result display.
 
         Shows a brief "calling..." indicator while executing, then displays
@@ -314,6 +367,10 @@ class REPL:
 
         Args:
             tc: The tool call from the LLM.
+
+        Returns:
+            The result dict (output, error, exit_code). Used by the caller
+            to track consecutive failures.
         """
         name = tc.function.get("name", "")
         raw_args = tc.function.get("arguments", "{}")
@@ -323,26 +380,34 @@ class REPL:
         except json.JSONDecodeError:
             err = f"Invalid JSON args: {raw_args}"
             display_tool_error(name, err)
-            result = {"output": "", "error": err, "exit_code": 1}
+            result: dict[str, Any] = {"output": "", "error": err, "exit_code": 1}
             self._history.add_tool_result(tc.id, json.dumps(result))
-            return
+            return result
 
         if not isinstance(args, dict):
             args = {"value": str(args)}
 
         entry = self._registry.get_entry(name)
         if entry is None:
-            err = TOOL_ERROR_MISSING.format(name=name)
+            # Fuzzy matching: suggest similar tools
+            suggestions = self._registry.find_similar_tools(name)
+            if suggestions:
+                err = (
+                    f"Tool '{name}' not found. "
+                    f"Did you mean: {', '.join(suggestions[:3])}?"
+                )
+            else:
+                err = TOOL_ERROR_MISSING.format(name=name)
             display_tool_error(name, err)
             result = {"output": "", "error": err, "exit_code": 1}
             self._history.add_tool_result(tc.id, json.dumps(result))
-            return
+            return result
 
         # Show brief "running" indicator
         _console.print(f"  [dim]▶ {entry.display_path} ...[/dim]")
 
         # Safety gate: for write operations, ask user
-        if entry.is_write:
+        if entry.is_write and not entry.handler:
             if not confirm_write_operation(entry, args):
                 result = {
                     "output": WRITE_CANCELLED,
@@ -351,12 +416,24 @@ class REPL:
                 }
                 display_tool_result(entry, args, result)
                 self._history.add_tool_result(tc.id, json.dumps(result))
-                return
+                return result
 
-        # Execute
-        result = execute_tool_call(entry, args)
+        # Built-in tool: call handler directly
+        if entry.handler is not None:
+            result = entry.handler(args)
+        else:
+            # CLI tool: execute and check for large output
+            result = execute_tool_call(entry, args)
+            if result.get("exit_code", 0) == 0 and result.get("output"):
+                result["output"] = make_tool_output(
+                    output=result["output"],
+                    store=self._result_store,
+                    description=entry.display_path,
+                )
+
         display_tool_result(entry, args, result)
         self._history.add_tool_result(tc.id, json.dumps(result))
+        return result
 
     def _say(self, text: str) -> None:
         """Print a plain message to the console.
@@ -384,6 +461,7 @@ class REPL:
 
         elif cmd in ("/clear", "/new"):
             self._history = self._build_history()
+            self._result_store.clear()
             _console.print(
                 tr_multi(
                     "[dim]Nova konversacio.[/dim]",
@@ -432,7 +510,24 @@ class REPL:
         Returns:
             A new ConversationHistory instance.
         """
-        modules = ", ".join(self._registry.module_names) if self._registry.module_names else "(neniu)"
         base_prompt = load_system_prompt()
-        system = f"{base_prompt}\n\nInstalled modules: {modules}"
+        modules_str = ", ".join(
+            self._registry.module_names
+        ) if self._registry.module_names else "(neniu)"
+
+        # Also append module descriptions where available
+        desc_lines: list[str] = []
+        for mod in self._registry.module_names:
+            desc = getattr(self._registry, "_module_descriptions", {}).get(mod, "")
+            if desc:
+                desc_lines.append(f"  {mod}: {desc}")
+        extra = ""
+        if desc_lines:
+            extra = "\n\nModule descriptions:\n" + "\n".join(desc_lines)
+
+        system = (
+            f"{base_prompt}\n\n"
+            f"Installed modules: {modules_str}"
+            f"{extra}"
+        )
         return ConversationHistory(system)

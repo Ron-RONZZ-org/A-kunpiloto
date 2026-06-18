@@ -7,7 +7,10 @@ in OpenAI's function-calling format using Typer 0.26+ native API.
 
 from __future__ import annotations
 
+import difflib
 import importlib.metadata
+from collections.abc import Callable
+from typing import Any
 
 import typer
 from typer.models import CommandInfo, DefaultPlaceholder, TyperInfo
@@ -18,6 +21,38 @@ from A_kunpiloto.tools._base import (
     is_write_command,
     normalize_tool_name,
 )
+
+
+def _get_app_help_text(app: typer.Typer) -> str:
+    """Extract the module-level help text from a Typer app.
+
+    Tries ``app.info.help`` first (the ``help=`` argument to ``Typer()``),
+    then falls back to a default module description.
+
+    Args:
+        app: The Typer app instance.
+
+    Returns:
+        Help text string (may be empty).
+    """
+    info = getattr(app, "info", None)
+    if info:
+        raw = getattr(info, "help", None)
+        if raw and not isinstance(raw, DefaultPlaceholder):
+            return str(raw)
+    return ""
+
+
+def _make_module_tag(module_name: str) -> str:
+    """Build a short module tag for tool descriptions.
+
+    Args:
+        module_name: The module name (e.g. "semantika").
+
+    Returns:
+        Tag string like "[semantika] ".
+    """
+    return f"[{module_name}] "
 
 
 def _resolve_command_name(cmd_info: CommandInfo) -> str:
@@ -59,6 +94,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, ToolEntry] = {}
         self._module_names: list[str] = []
+        # Module_name -> description (extracted from Typer app help text)
+        self._module_descriptions: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -72,6 +109,7 @@ class ToolRegistry:
         """
         self._entries.clear()
         self._module_names.clear()
+        self._module_descriptions.clear()
 
         for ep in importlib.metadata.entry_points(group="A.commands"):
             module_name = ep.name
@@ -83,6 +121,12 @@ class ToolRegistry:
                 continue
 
             self._module_names.append(module_name)
+
+            # Store module-level description from app help text
+            app_help = _get_app_help_text(app)
+            if app_help:
+                self._module_descriptions[module_name] = app_help
+
             self._walk_typer_app(
                 app=app,
                 module_name=module_name,
@@ -108,6 +152,51 @@ class ToolRegistry:
             The ToolEntry, or None if not found.
         """
         return self._entries.get(tool_name)
+
+    def register_builtin(
+        self,
+        name: str,
+        description: str,
+        schema: dict[str, Any],
+        handler: Callable[..., dict[str, Any]],
+    ) -> None:
+        """Register a built-in tool (not wrapping a CLI command).
+
+        Args:
+            name: Tool name (e.g. "read_result").
+            description: Short description for the LLM.
+            schema: Full OpenAI-compatible tool schema.
+            handler: Callable[[dict], dict] that receives args and returns result.
+        """
+        entry = ToolEntry(
+            name=name,
+            module_name="_builtin",
+            display_path=name,
+            description=description,
+            schema=schema,
+            is_write=False,
+            args_prefix=[],
+            positional_params=[],
+            handler=handler,
+        )
+        self._entries[name] = entry
+
+    def find_similar_tools(self, name: str, cutoff: float = 0.5) -> list[str]:
+        """Find registered tool names similar to *name*.
+
+        Uses difflib fuzzy matching against all registered tool names.
+
+        Args:
+            name: The (possibly misspelled) tool name.
+            cutoff: Similarity threshold (0.0–1.0).
+
+        Returns:
+            Up to 3 similar tool names.
+        """
+        matches = difflib.get_close_matches(
+            name, self._entries.keys(), n=3, cutoff=cutoff,
+        )
+        return matches
 
     @property
     def module_names(self) -> list[str]:
@@ -215,10 +304,25 @@ class ToolRegistry:
 
         display_path = " ".join([module_name, *args_prefix, command_name])
 
+        # Build enriched description with module context
+        module_tag = _make_module_tag(module_name)
+        module_desc = self._module_descriptions.get(module_name, "")
+        # Priority: cmd_info.help > short_help > docstring from build_tool_schema
+        base_desc = schema["function"]["description"]
         if cmd_info.help:
-            schema["function"]["description"] = cmd_info.help
+            base_desc = cmd_info.help
         elif cmd_info.short_help:
-            schema["function"]["description"] = cmd_info.short_help
+            base_desc = cmd_info.short_help
+
+        if module_desc and base_desc:
+            schema["function"]["description"] = (
+                f"{module_tag}{module_desc} {base_desc}"
+            )
+        elif base_desc:
+            schema["function"]["description"] = f"{module_tag}{base_desc}"
+        elif module_desc:
+            schema["function"]["description"] = module_tag
+        # else: keep schema's existing description (from build_tool_schema)
 
         entry = ToolEntry(
             name=full_name,
@@ -295,10 +399,25 @@ class ToolRegistry:
             module_name=module_name,
         )
 
-        if callback.__doc__:
-            schema["function"]["description"] = callback.__doc__.strip()
-        elif rc.help and not isinstance(rc.help, DefaultPlaceholder):
-            schema["function"]["description"] = rc.help
+        # Build enriched description with module context
+        module_tag = _make_module_tag(module_name)
+        module_desc = self._module_descriptions.get(module_name, "")
+        # Priority: rc.help > callback docstring > schema default from build_tool_schema
+        base_desc = schema["function"]["description"]
+        if rc.help and not isinstance(rc.help, DefaultPlaceholder):
+            base_desc = rc.help
+        elif callback.__doc__:
+            base_desc = callback.__doc__.strip()
+
+        if module_desc and base_desc:
+            schema["function"]["description"] = (
+                f"{module_tag}{module_desc} {base_desc}"
+            )
+        elif base_desc:
+            schema["function"]["description"] = f"{module_tag}{base_desc}"
+        elif module_desc:
+            schema["function"]["description"] = module_tag
+        # else: keep schema's existing description
 
         entry = ToolEntry(
             name=tool_name,

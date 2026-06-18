@@ -165,3 +165,114 @@ class TestFlatAppSupport:
             parsed = json.loads(dumped)
             assert parsed["type"] == "function"
             assert parsed["function"]["name"] == "testflat"
+
+
+# ---------------------------------------------------------------------------
+# Built-in tools
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinTools:
+    def test_register_builtin(self, registry):
+        """A built-in tool can be registered and retrieved."""
+        registry.register_builtin(
+            name="test_util",
+            description="A test utility",
+            schema={"type": "function", "function": {"name": "test_util"}},
+            handler=lambda args: {"output": "ok", "error": "", "exit_code": 0},
+        )
+        entry = registry.get_entry("test_util")
+        assert entry is not None
+        assert entry.name == "test_util"
+        assert entry.module_name == "_builtin"
+        assert entry.handler is not None
+        assert entry.is_write is False  # built-ins are never write
+        assert entry.args_prefix == []
+
+    def test_builtin_appears_in_schemas(self, registry):
+        """Built-in tools should appear in get_schemas()."""
+        registry.register_builtin(
+            name="my_builtin",
+            description="test",
+            schema={"type": "function", "function": {"name": "my_builtin"}},
+            handler=lambda args: {},
+        )
+        names = [s["function"]["name"] for s in registry.get_schemas()]
+        assert "my_builtin" in names
+
+    def test_builtin_handler_executes(self, registry):
+        """The built-in tool handler should be callable."""
+        results = []
+
+        def handler(args):
+            results.append(args)
+            return {"output": "done", "error": "", "exit_code": 0}
+
+        registry.register_builtin(
+            name="builder",
+            description="test",
+            schema={"type": "function", "function": {"name": "builder"}},
+            handler=handler,
+        )
+        entry = registry.get_entry("builder")
+        assert entry is not None
+        assert entry.handler is not None
+        out = entry.handler({"x": 1})
+        assert out["output"] == "done"
+        assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy matching
+# ---------------------------------------------------------------------------
+
+
+class TestFuzzyMatching:
+    def test_find_exact(self, registry):
+        """An exact tool name should return itself."""
+        matches = registry.find_similar_tools("testmod_ls")
+        assert "testmod_ls" in matches
+
+    def test_find_similar(self, registry):
+        """Close misspellings should be suggested."""
+        matches = registry.find_similar_tools("testmod_ldoni")  # close to aldoni
+        # Should suggest testmod_aldoni or similar
+        assert len(matches) > 0
+
+    def test_no_similar(self, registry):
+        """Completely different names should return empty."""
+        matches = registry.find_similar_tools("zzzzzzzzz")
+        assert matches == []
+
+    def test_find_nonexistent_returns_empty(self, registry):
+        """Empty string should return no matches."""
+        matches = registry.find_similar_tools("")
+        assert isinstance(matches, list)
+
+
+# ---------------------------------------------------------------------------
+# Module descriptions in tool schemas
+# ---------------------------------------------------------------------------
+
+
+class TestModuleDescriptions:
+    def test_module_descriptions_present(self, registry):
+        """Module descriptions should be populated from Typer app help."""
+        descs = registry._module_descriptions
+        assert "testmod" in descs
+        # The test_app has help="Testa modulo"
+        assert "Testa modulo" in descs["testmod"]
+
+    def test_tool_description_contains_module_tag(self, registry):
+        """Tool descriptions should be prefixed with [module_name]."""
+        entry = registry.get_entry("testmod_ls")
+        assert entry is not None
+        desc = entry.schema["function"]["description"]
+        assert "[testmod]" in desc, f"Description missing module tag: {desc}"
+
+    def test_module_tag_does_not_break_json(self, registry):
+        """Module-prefixed descriptions must remain JSON-serializable."""
+        for schema in registry.get_schemas():
+            dumped = json.dumps(schema)
+            parsed = json.loads(dumped)
+            assert "description" in parsed["function"]
