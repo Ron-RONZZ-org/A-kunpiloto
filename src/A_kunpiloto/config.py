@@ -30,9 +30,11 @@ from A.core.paths import config_dir
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 COMMANDS_DIRNAME = "commands"
+CONFIG_FILENAME = "config.toml"
 
 # Names of the shipped default files (package data inside ``A_kunpiloto``).
 _SHIPPED_SYSTEM_PROMPT = "system_prompt.md"
+_SHIPPED_CONFIG_DEFAULTS = "config.default.toml"
 
 
 def _kunpiloto_dir() -> Path:
@@ -60,6 +62,15 @@ def commands_dir() -> Path:
         ``~/.config/A/kunpiloto/commands/``.
     """
     return _kunpiloto_dir() / COMMANDS_DIRNAME
+
+
+def config_path() -> Path:
+    """Return the path to the user-modifiable config file.
+
+    Returns:
+        ``~/.config/A/kunpiloto/config.toml``.
+    """
+    return _kunpiloto_dir() / CONFIG_FILENAME
 
 
 def _read_shipped(filename: str) -> str | None:
@@ -130,6 +141,52 @@ def load_system_prompt() -> str:
 
     # 3. Hardcoded fallback
     return DEFAULT_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Config file auto-seeding
+# ---------------------------------------------------------------------------
+
+
+def _seed_default_config() -> Path | None:
+    """Copy the shipped default config to the config dir if it doesn't exist.
+
+    Creates the config directory if necessary.  Idempotent — won't
+    overwrite an existing config file the user may have edited.
+
+    Returns:
+        The config path if seeded (or already exists), ``None`` if the
+        shipped file could not be read.
+    """
+    shipped = _read_shipped(_SHIPPED_CONFIG_DEFAULTS)
+    if shipped is None:
+        return None
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        try:
+            path.write_text(shipped, encoding="utf-8")
+        except OSError:
+            return None
+    return path
+
+
+def ensure_config() -> Path | None:
+    """Ensure the kunpiloto config file exists, auto-seeding if needed.
+
+    This is the public entry point (called from ``cli._build_session``).
+    It ensures that both the system prompt and the default config are
+    seeded on first run.
+
+    Returns:
+        The config path if available, ``None`` if seeding failed.
+    """
+    # 1. Ensure system prompt is seeded (existing behaviour)
+    load_system_prompt()
+
+    # 2. Ensure default config is seeded
+    return _seed_default_config()
 
 
 # ---------------------------------------------------------------------------

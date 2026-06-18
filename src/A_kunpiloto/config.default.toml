@@ -1,0 +1,26 @@
+# A-kunpiloto configuration
+#
+# This file was auto-generated on first run. Edit it to customise
+# the file read/write allowlists for the AI copilot.
+#
+# All paths support glob patterns:
+#   *   matches any filename in a single directory
+#   **  matches any depth of directories
+#   ?   matches a single character
+#
+# Write-allowed directories are AUTOMATICALLY added to read permissions,
+# so the AI can always read back what it wrote.
+#
+# Available settings:
+#   write_always_allowed_directories = ["/tmp/A/kunpiloto/**"]
+#     Directories where write_file can write without user confirmation.
+#
+#   read_always_allowed_directories = ["/tmp/**"]
+#     Additional directories where read_file can read without user confirmation.
+#     Write-allowed dirs are already included automatically.
+#
+#   write_max_file_size = 10485760
+#     Maximum file size in bytes for write_file (default: 10 MB).
+
+write_always_allowed_directories = ["/tmp/A/kunpiloto/**"]
+read_always_allowed_directories = ["/tmp/**"]

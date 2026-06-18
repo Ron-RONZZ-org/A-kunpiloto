@@ -14,7 +14,7 @@ from A import info, error, tr_multi
 from A.core.ai_config import get_configured_provider
 
 from A_kunpiloto.commands import load_commands
-from A_kunpiloto.config import KUNPILOTO_SCHEMA
+from A_kunpiloto.config import KUNPILOTO_SCHEMA, ensure_config
 from A_kunpiloto.session import SessionState
 from A_kunpiloto.tools.registry import ToolRegistry
 
@@ -63,7 +63,10 @@ def _build_session(
     """
     session = SessionState()
 
-    # Load config
+    # Ensure shipped defaults are seeded (first-run auto-config)
+    ensure_config()
+
+    # Load config (merges TOML + CLI overrides + hardcoded defaults)
     session.config = KUNPILOTO_SCHEMA.load()
     if provider_type:
         session.config["provider"] = provider_type
