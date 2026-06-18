@@ -10,19 +10,25 @@ import json
 from typing import Any
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt
 
 from A import info, error as log_error, tr_multi
 
-from A.core.providers import LLMProvider, LLMResponse, ToolCall
+from A.core.providers import LLMProvider, ToolCall
 
 from A_kunpiloto.config import DEFAULT_SYSTEM_PROMPT
 from A_kunpiloto.history import ConversationHistory
-from A_kunpiloto.session import SessionState
 from A_kunpiloto.tools.executor import execute_tool_call
 from A_kunpiloto.tools.registry import ToolRegistry
 from A_kunpiloto.tools.safety import confirm_write_operation
+from A_kunpiloto._display import (
+    display_assistant,
+    display_tool_error,
+    display_tool_list,
+    display_tool_result,
+    display_welcome,
+)
+from A_kunpiloto._spinner import ThinkingSpinner
 
 _console = Console()
 
@@ -157,7 +163,7 @@ class REPL:
 
     def run(self) -> None:
         """Start the interactive REPL loop."""
-        _console.print(WELCOME, style="bold green")
+        display_welcome(WELCOME)
 
         while True:
             try:
@@ -187,6 +193,9 @@ class REPL:
     def _process_turn(self) -> None:
         """Process a single user turn with possible tool rounds."""
         for turn in range(self._max_turns):
+            # Show thinking spinner while waiting for LLM
+            self._start_thinking()
+
             try:
                 response = self._provider.chat(
                     self._history.messages,
@@ -194,12 +203,15 @@ class REPL:
                     temperature=self._temperature,
                 )
             except Exception as exc:
+                self._stop_thinking()
                 log_error(tr_multi(
                     f"Eraro de LLM: {exc}",
                     f"LLM error: {exc}",
                     f"Erreur LLM : {exc}",
                 ))
                 return
+
+            self._stop_thinking()
 
             # Extract reasoning content if present
             reasoning = getattr(response, "reasoning_content", None)
@@ -210,7 +222,7 @@ class REPL:
                     content=response.content,
                     reasoning_content=reasoning,
                 )
-                self._display_assistant(response.content)
+                display_assistant(response.content)
                 return
 
             # Has tool calls — add assistant message with tool calls
@@ -239,8 +251,28 @@ class REPL:
             content=MAX_TURNS_MSG.format(n=self._max_turns),
         )
 
+    # ------------------------------------------------------------------
+    # Thinking indicator (simple thread-based spinner)
+    # ------------------------------------------------------------------
+
+    _spinner: ThinkingSpinner | None = None
+
+    def _start_thinking(self) -> None:
+        """Show a thinking indicator in the terminal."""
+        self._spinner = ThinkingSpinner()
+        self._spinner.start()
+
+    def _stop_thinking(self) -> None:
+        """Stop the thinking indicator."""
+        if self._spinner:
+            self._spinner.stop()
+            self._spinner = None
+
     def _handle_tool_call(self, tc: ToolCall) -> None:
-        """Execute a single tool call with safety gate.
+        """Execute a single tool call with safety gate and result display.
+
+        Shows a brief "calling..." indicator while executing, then displays
+        the result (success in green, error in red).
 
         Args:
             tc: The tool call from the LLM.
@@ -251,7 +283,9 @@ class REPL:
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         except json.JSONDecodeError:
-            result = {"output": "", "error": f"Invalid JSON args: {raw_args}", "exit_code": 1}
+            err = f"Invalid JSON args: {raw_args}"
+            display_tool_error(name, err)
+            result = {"output": "", "error": err, "exit_code": 1}
             self._history.add_tool_result(tc.id, json.dumps(result))
             return
 
@@ -260,13 +294,14 @@ class REPL:
 
         entry = self._registry.get_entry(name)
         if entry is None:
-            result = {
-                "output": "",
-                "error": TOOL_ERROR_MISSING.format(name=name),
-                "exit_code": 1,
-            }
+            err = TOOL_ERROR_MISSING.format(name=name)
+            display_tool_error(name, err)
+            result = {"output": "", "error": err, "exit_code": 1}
             self._history.add_tool_result(tc.id, json.dumps(result))
             return
+
+        # Show brief "running" indicator
+        _console.print(f"  [dim]▶ {entry.display_path} ...[/dim]")
 
         # Safety gate: for write operations, ask user
         if entry.is_write:
@@ -276,34 +311,14 @@ class REPL:
                     "error": "",
                     "exit_code": 0,
                 }
+                display_tool_result(entry, args, result)
                 self._history.add_tool_result(tc.id, json.dumps(result))
                 return
 
         # Execute
         result = execute_tool_call(entry, args)
+        display_tool_result(entry, args, result)
         self._history.add_tool_result(tc.id, json.dumps(result))
-
-    # ------------------------------------------------------------------
-    # Display helpers
-    # ------------------------------------------------------------------
-
-    def _display_assistant(self, content: str) -> None:
-        """Show the assistant's response in a Rich panel.
-
-        Args:
-            content: The text to display.
-        """
-        panel = Panel(
-            content or "[dim]⋯[/dim]",
-            title=tr_multi(
-                "[bold yellow]Kunpiloto[/bold yellow]",
-                "[bold yellow]Copilot[/bold yellow]",
-                "[bold yellow]Copilote[/bold yellow]",
-            ),
-            border_style="yellow",
-            padding=(1, 2),
-        )
-        _console.print(panel)
 
     def _say(self, text: str) -> None:
         """Print a plain message to the console.
@@ -343,7 +358,7 @@ class REPL:
             _console.print(HELP_TEXT)
 
         elif cmd in ("/tools", "/iloj"):
-            self._list_tools()
+            display_tool_list(self._registry)
 
         else:
             _console.print(
@@ -353,62 +368,6 @@ class REPL:
                     f"[red]Commande inconnue : {cmd}[/red]",
                 )
             )
-
-    def _list_tools(self) -> None:
-        """Display all registered tools grouped by module."""
-        from rich.table import Table
-        from rich.box import SIMPLE as BOX_SIMPLE
-
-        if not self._registry.tool_names:
-            _console.print(
-                tr_multi(
-                    "[yellow]Neniuj iloj trovita.[/yellow]",
-                    "[yellow]No tools found.[/yellow]",
-                    "[yellow]Aucun outil trouvé.[/yellow]",
-                )
-            )
-            return
-
-        for mod in self._registry.module_names:
-            mod_tools = [
-                n for n in self._registry.tool_names
-                if n.startswith(f"{mod}_")
-            ]
-            if not mod_tools:
-                continue
-
-            table = Table(
-                show_header=True,
-                box=BOX_SIMPLE,
-                title=f"[bold]{mod}[/bold]",
-                title_style="bold cyan",
-            )
-            table.add_column(
-                tr_multi("Ilo", "Tool", "Outil"),
-                style="green",
-                no_wrap=True,
-            )
-            table.add_column(
-                tr_multi("Priskribo", "Description", "Description"),
-                style="white",
-            )
-            table.add_column(
-                tr_multi("Tipo", "Type", "Type"),
-                style="yellow",
-                width=6,
-            )
-
-            for name in sorted(mod_tools):
-                entry = self._registry.get_entry(name)
-                if entry:
-                    tool_type = "✏️" if entry.is_write else "📖"
-                    table.add_row(
-                        entry.display_path,
-                        entry.description[:80],
-                        tool_type,
-                    )
-            _console.print(table)
-            _console.print()
 
     # ------------------------------------------------------------------
     # History builder

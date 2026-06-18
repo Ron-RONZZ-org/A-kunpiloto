@@ -71,6 +71,31 @@ def sub_ls() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Flat app (like A-tempo) — no subcommands, root callback only
+# ---------------------------------------------------------------------------
+
+flat_app = typer.Typer(
+    help=tr_multi("Plata modulo", "Flat module", "Module plat"),
+    invoke_without_command=True,
+)
+
+
+@flat_app.callback(invoke_without_command=True)
+def flat_main(
+    ctx: typer.Context,
+    horzono: int = typer.Option(0, "--horzono", "-z", help="Timezone offset"),
+    chiuj: bool = typer.Option(False, "--chiuj", "-a", help="Show all"),
+) -> None:
+    """Run the flat module command.
+
+    This is a test flat app with no subcommands.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    print(f"horzono={horzono}, chiuj={chiuj}")
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -84,10 +109,13 @@ def runner() -> CliRunner:
 @pytest.fixture
 def mock_entry_points() -> list:
     """Create mock entry points for testing tool discovery."""
-    ep = MagicMock()
-    ep.name = "testmod"
-    ep.load.return_value = test_app
-    return [ep]
+    ep1 = MagicMock()
+    ep1.name = "testmod"
+    ep1.load.return_value = test_app
+    ep2 = MagicMock()
+    ep2.name = "testflat"
+    ep2.load.return_value = flat_app
+    return [ep1, ep2]
 
 
 @pytest.fixture
@@ -96,6 +124,20 @@ def registry(mock_entry_points) -> ToolRegistry:
     with patch(
         "importlib.metadata.entry_points",
         return_value=mock_entry_points,
+    ):
+        reg = ToolRegistry()
+        reg.build()
+        return reg
+
+
+@pytest.fixture
+def flat_registry(mock_entry_points) -> ToolRegistry:
+    """Build a ToolRegistry with ONLY the flat app registered."""
+    # Filter entry points to only the flat one
+    flat_eps = [ep for ep in mock_entry_points if ep.name == "testflat"]
+    with patch(
+        "importlib.metadata.entry_points",
+        return_value=flat_eps,
     ):
         reg = ToolRegistry()
         reg.build()

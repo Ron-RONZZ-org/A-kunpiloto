@@ -6,7 +6,8 @@ import json
 
 from unittest.mock import patch, MagicMock
 
-from A_kunpiloto.tools.registry import ToolRegistry, _is_write_command, _build_tool_schema
+from A_kunpiloto.tools.registry import ToolRegistry
+from A_kunpiloto.tools._base import is_write_command, build_tool_schema
 
 
 # ---------------------------------------------------------------------------
@@ -16,18 +17,18 @@ from A_kunpiloto.tools.registry import ToolRegistry, _is_write_command, _build_t
 
 class TestCommandClassification:
     def test_write_commands_identified(self):
-        assert _is_write_command("aldoni") is True
-        assert _is_write_command("modifi") is True
-        assert _is_write_command("forigi") is True
-        assert _is_write_command("sendi") is True
+        assert is_write_command("aldoni") is True
+        assert is_write_command("modifi") is True
+        assert is_write_command("forigi") is True
+        assert is_write_command("sendi") is True
 
     def test_read_commands_identified(self):
-        assert _is_write_command("ls") is False
-        assert _is_write_command("vidi") is False
-        assert _is_write_command("serci") is False
+        assert is_write_command("ls") is False
+        assert is_write_command("vidi") is False
+        assert is_write_command("serci") is False
 
     def test_unknown_classified_as_read(self):
-        assert _is_write_command("unknown_cmd") is False
+        assert is_write_command("unknown_cmd") is False
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +52,8 @@ class TestToolRegistry:
 
     def test_tool_names_contain_module_prefix(self, registry):
         names = registry.tool_names
-        assert all(n.startswith("testmod_") for n in names)
+        testmod_names = [n for n in names if n.startswith("testmod_")]
+        assert len(testmod_names) == 5  # ls, vidi, aldoni, forigi, sub_ls
 
     def test_tool_entry_has_required_fields(self, registry):
         entry = registry.get_entry("testmod_ls")
@@ -118,3 +120,48 @@ class TestToolRegistry:
         with patch("importlib.metadata.entry_points", return_value=[bad_ep, good_ep]):
             reg = ToolRegistry()
             reg.build()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Flat app tests
+# ---------------------------------------------------------------------------
+
+
+class TestFlatAppSupport:
+    def test_flat_app_discovered(self, flat_registry):
+        """A flat app (no subcommands, root callback) should be discovered."""
+        assert len(flat_registry) == 1
+        assert "testflat" in flat_registry.module_names
+
+    def test_flat_app_tool_name_is_module_name(self, flat_registry):
+        """Flat app tool should be named after the module."""
+        assert flat_registry.tool_names == ["testflat"]
+
+    def test_flat_app_tool_has_params(self, flat_registry):
+        """Flat app tool should have parameters from the callback."""
+        entry = flat_registry.get_entry("testflat")
+        assert entry is not None
+        schema = entry.schema
+        params = schema["function"]["parameters"]["properties"]
+        assert "horzono" in params
+        assert "chiuj" in params
+
+    def test_flat_app_has_no_args_prefix(self, flat_registry):
+        """Flat app tool should have empty args_prefix (no subcommand)."""
+        entry = flat_registry.get_entry("testflat")
+        assert entry is not None
+        assert entry.args_prefix == []
+
+    def test_flat_app_not_write(self, flat_registry):
+        """Flat app tool should not be classified as write by default."""
+        entry = flat_registry.get_entry("testflat")
+        assert entry is not None
+        assert entry.is_write is False
+
+    def test_flat_app_schema_serializable(self, flat_registry):
+        """Flat app schema must be JSON-serializable."""
+        for schema in flat_registry.get_schemas():
+            dumped = json.dumps(schema)
+            parsed = json.loads(dumped)
+            assert parsed["type"] == "function"
+            assert parsed["function"]["name"] == "testflat"

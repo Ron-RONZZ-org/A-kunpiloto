@@ -8,72 +8,15 @@ in OpenAI's function-calling format using Typer 0.26+ native API.
 from __future__ import annotations
 
 import importlib.metadata
-import inspect
-from dataclasses import dataclass, field
-from typing import Any, get_type_hints
 
 import typer
-from typer.models import ArgumentInfo, CommandInfo, OptionInfo, TyperInfo
+from typer.models import CommandInfo, DefaultPlaceholder, TyperInfo
 
-
-@dataclass
-class ToolEntry:
-    """A single tool wrapping a CLI command.
-
-    Attributes:
-        name: Canonical tool name (e.g. "vorto_aldoni").
-        module_name: Module name (e.g. "vorto").
-        display_path: Human-readable path (e.g. "vorto aldoni").
-        description: Short description for the LLM.
-        schema: OpenAI-compatible tool schema dict (the full function object).
-        is_write: Whether this command modifies data.
-        args_prefix: CLI arg prefix (e.g. ["retposto", "sendi"]).
-        positional_params: Names of positional (Argument) params, in order.
-    """
-    name: str
-    module_name: str
-    display_path: str
-    description: str
-    schema: dict[str, Any] = field(default_factory=dict)
-    is_write: bool = False
-    args_prefix: list[str] = field(default_factory=list)
-    positional_params: list[str] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Known write command name suffixes
-# ---------------------------------------------------------------------------
-
-WRITE_COMMAND_SUFFIXES: frozenset[str] = frozenset({
-    "aldoni", "modifi", "forigi",
-    "sendi", "respondi", "plusendi",
-    "forgesi", "restauxrigi", "restaŭrigi", "malplenigi",
-    "importi", "movi", "kreu", "krei",
-})
-
-
-def _is_write_command(command_name: str) -> bool:
-    """Classify a command as write (destructive) or read-only.
-
-    Args:
-        command_name: The leaf command name (e.g. "aldoni").
-
-    Returns:
-        True if the command is a write operation.
-    """
-    return command_name in WRITE_COMMAND_SUFFIXES
-
-
-# ---------------------------------------------------------------------------
-# Schema generation helpers
-# ---------------------------------------------------------------------------
-
-CLICK_TYPE_MAP: dict[type, str] = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-}
+from A_kunpiloto.tools._base import (
+    ToolEntry,
+    build_tool_schema,
+    is_write_command,
+)
 
 
 def _resolve_command_name(cmd_info: CommandInfo) -> str:
@@ -90,162 +33,6 @@ def _resolve_command_name(cmd_info: CommandInfo) -> str:
     if cmd_info.callback:
         return cmd_info.callback.__name__.replace("_", "-")
     return "unnamed"
-
-
-def _get_param_help(param_default: Any) -> str:
-    """Extract help text from a parameter's default value.
-
-    Args:
-        param_default: The default value (may be ArgumentInfo, OptionInfo, etc.).
-
-    Returns:
-        Help text string.
-    """
-    if hasattr(param_default, "help") and param_default.help:
-        return param_default.help
-    return ""
-
-
-def _param_to_json_schema(
-    param_name: str,
-    param_default: Any,
-    param_annotation: Any,
-) -> dict[str, Any] | None:
-    """Convert a function parameter to a JSON Schema property dict.
-
-    Args:
-        param_name: The parameter name.
-        param_default: The parameter's default value.
-        param_annotation: The type annotation.
-
-    Returns:
-        A JSON Schema property dict, or None if the param should be skipped.
-    """
-    # Determine JSON Schema type from annotation
-    if param_annotation is inspect.Parameter.empty:
-        json_type = "string"
-    else:
-        json_type = CLICK_TYPE_MAP.get(param_annotation, "string")
-
-    schema: dict[str, Any] = {"type": json_type}
-
-    # Help text from ArgumentInfo/OptionInfo
-    help_text = _get_param_help(param_default)
-    if help_text:
-        schema["description"] = help_text
-
-    # Default value (from OptionInfo or plain default)
-    # Skip typer's internal DefaultPlaceholder
-    from typer.models import DefaultPlaceholder
-    if isinstance(param_default, DefaultPlaceholder):
-        pass  # No meaningful default
-    elif isinstance(param_default, (ArgumentInfo, OptionInfo)):
-        pass  # These are descriptors, not actual defaults
-    elif param_default is not inspect.Parameter.empty:
-        # Plain default value (e.g. `count: int = 5`)
-        if json_type == "integer":
-            schema["default"] = int(param_default)
-        elif json_type == "number":
-            schema["default"] = float(param_default)
-        elif json_type == "boolean":
-            schema["default"] = bool(param_default)
-        else:
-            schema["default"] = str(param_default)
-
-    return schema
-
-
-def _is_positional_param(param: inspect.Parameter) -> bool:
-    """Check if a parameter is a positional (Argument) parameter.
-
-    In Typer 0.26+, parameters with ``typer.Argument(...)`` as default
-    are positional. Parameters without defaults are also positional.
-
-    Args:
-        param: The inspect.Parameter object.
-
-    Returns:
-        True if the param is a positional argument.
-    """
-    # typer.Argument(...) → positional
-    if isinstance(param.default, ArgumentInfo):
-        return True
-    # typer.Option(...) → not positional
-    if isinstance(param.default, OptionInfo):
-        return False
-    # No default (and not *args, **kwargs) → positional
-    if param.default is inspect.Parameter.empty:
-        return True
-    # Has a plain default value → option-style
-    return False
-
-
-def _build_tool_schema(
-    callback: Any,
-    tool_name: str,
-    module_name: str,
-) -> dict[str, Any]:
-    """Build an OpenAI-compatible tool schema from a Typer callback function.
-
-    Args:
-        callback: The command callback function.
-        tool_name: The canonical tool name.
-        module_name: The A-module name (for context).
-
-    Returns:
-        A tool schema dict with parameters extracted from the function signature.
-    """
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    positional: list[str] = []
-
-    sig = inspect.signature(callback)
-    type_hints = get_type_hints(callback)
-
-    for param_name, param in sig.parameters.items():
-        # Skip self, cls, context, *args, **kwargs
-        if param_name in ("self", "cls", "ctx", "context"):
-            continue
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-            continue
-
-        annotation = type_hints.get(param_name, str)
-        prop_schema = _param_to_json_schema(param_name, param.default, annotation)
-        if prop_schema is None:
-            continue
-
-        properties[param_name] = prop_schema
-
-        is_positional = _is_positional_param(param)
-        if is_positional:
-            positional.append(param_name)
-            required.append(param_name)
-
-    # Description: docstring > help
-    description = ""
-    if callback.__doc__:
-        description = callback.__doc__.strip()
-    # Find help from CommandInfo (we don't have it here, but we'll use docstring)
-
-    if not description:
-        description = f"{module_name} {tool_name}"
-
-    schema: dict[str, Any] = {
-        "type": "function",
-        "function": {
-            "name": tool_name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-            },
-        },
-    }
-
-    if required:
-        schema["function"]["parameters"]["required"] = required
-
-    return schema, positional
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +85,7 @@ class ToolRegistry:
                 args_prefix=[],
             )
 
-    def get_schemas(self) -> list[dict[str, Any]]:
+    def get_schemas(self) -> list[dict]:
         """Return all tool schemas for LLM consumption.
 
         Returns:
@@ -343,12 +130,17 @@ class ToolRegistry:
     ) -> None:
         """Walk a Typer app's commands and sub-typers.
 
+        Flat apps (no subcommands, root callback only like A-tempo) are
+        detected and registered as a single tool.
+
         Args:
             app: The Typer app to walk.
             module_name: The A-module name.
             prefix: Prefix for tool naming.
             args_prefix: CLI arg prefix for path-like subcommands.
         """
+        has_commands = bool(app.registered_commands)
+
         # Register leaf commands
         for cmd_info in app.registered_commands:
             if cmd_info.hidden:
@@ -368,12 +160,25 @@ class ToolRegistry:
             sub_app = group_info.typer_instance
             if sub_app is None:
                 continue
+            has_commands = True
             self._walk_typer_app(
                 app=sub_app,
                 module_name=module_name,
                 prefix=f"{prefix}_{name}",
                 args_prefix=[*args_prefix, name],
             )
+
+        # Flat app: no subcommands but has root callback with params
+        if not has_commands and self._is_flat_app(app):
+            self._register_flat_app_callback(
+                app=app,
+                module_name=module_name,
+                prefix=prefix,
+            )
+
+    # ------------------------------------------------------------------
+    # Command registration
+    # ------------------------------------------------------------------
 
     def _register_command(
         self,
@@ -396,8 +201,7 @@ class ToolRegistry:
         if cmd_info.callback is None:
             return
 
-        # Build schema and extract positional params
-        schema, positional_params = _build_tool_schema(
+        schema, positional_params = build_tool_schema(
             callback=cmd_info.callback,
             tool_name=full_name,
             module_name=module_name,
@@ -405,7 +209,6 @@ class ToolRegistry:
 
         display_path = " ".join([module_name, *args_prefix, command_name])
 
-        # Use CommandInfo help as description fallback
         if cmd_info.help:
             schema["function"]["description"] = cmd_info.help
         elif cmd_info.short_help:
@@ -417,9 +220,88 @@ class ToolRegistry:
             display_path=display_path,
             description=schema["function"]["description"],
             schema=schema,
-            is_write=_is_write_command(command_name),
+            is_write=is_write_command(command_name),
             args_prefix=[*args_prefix, command_name],
             positional_params=positional_params,
         )
 
         self._entries[full_name] = entry
+
+    # ------------------------------------------------------------------
+    # Flat app support (no subcommands, e.g. A-tempo)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _has_real_callback(app: typer.Typer) -> bool:
+        """Check if the app has a real (non-default) root callback.
+
+        Args:
+            app: The Typer app.
+
+        Returns:
+            True if the app has a real callback function.
+        """
+        rc = getattr(app, "registered_callback", None)
+        if rc is None:
+            return False
+        cb = getattr(rc, "callback", None)
+        return cb is not None and not isinstance(cb, DefaultPlaceholder)
+
+    def _is_flat_app(self, app: typer.Typer) -> bool:
+        """Detect flat apps: no registered subcommands, but has root callback.
+
+        Args:
+            app: The Typer app.
+
+        Returns:
+            True if this is a flat app.
+        """
+        return (
+            not app.registered_commands
+            and not app.registered_groups
+            and self._has_real_callback(app)
+        )
+
+    def _register_flat_app_callback(
+        self,
+        app: typer.Typer,
+        module_name: str,
+        prefix: str,
+    ) -> None:
+        """Register the root callback of a flat app as a tool.
+
+        Args:
+            app: The Typer app.
+            module_name: The A-module name.
+            prefix: The tool name prefix.
+        """
+        rc = getattr(app, "registered_callback", None)
+        if rc is None:
+            return
+        callback = getattr(rc, "callback", None)
+        if callback is None:
+            return
+
+        tool_name = prefix
+        schema, positional_params = build_tool_schema(
+            callback=callback,
+            tool_name=tool_name,
+            module_name=module_name,
+        )
+
+        if callback.__doc__:
+            schema["function"]["description"] = callback.__doc__.strip()
+        elif rc.help and not isinstance(rc.help, DefaultPlaceholder):
+            schema["function"]["description"] = rc.help
+
+        entry = ToolEntry(
+            name=tool_name,
+            module_name=module_name,
+            display_path=module_name,
+            description=schema["function"]["description"],
+            schema=schema,
+            is_write=is_write_command(tool_name),
+            args_prefix=[],
+            positional_params=positional_params,
+        )
+        self._entries[tool_name] = entry
