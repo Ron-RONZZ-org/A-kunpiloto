@@ -6,6 +6,7 @@ from typing import Any
 
 from rich.box import SIMPLE as BOX_SIMPLE
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -17,13 +18,22 @@ _console = Console()
 
 
 def display_assistant(content: str) -> None:
-    """Show the assistant's response in a Rich panel.
+    """Show the assistant's response in a Rich panel with Markdown rendering.
+
+    Uses ``rich.markdown.Markdown`` to render bold, code blocks, lists,
+    headings, etc. so that LLM output appears formatted in the terminal.
 
     Args:
-        content: The text to display.
+        content: The text to display (raw Markdown).
     """
+    rendered: Markdown | str
+    if content:
+        rendered = Markdown(content)
+    else:
+        rendered = "[dim]⋯[/dim]"
+
     panel = Panel(
-        content or "[dim]⋯[/dim]",
+        rendered,
         title=tr_multi(
             "[bold yellow]Kunpiloto[/bold yellow]",
             "[bold yellow]Copilot[/bold yellow]",
