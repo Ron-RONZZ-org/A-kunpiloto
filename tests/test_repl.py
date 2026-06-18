@@ -170,3 +170,71 @@ class TestCustomCommandExecution:
         system_msgs = [m for m in history if m["role"] == "system"]
         assert len(system_msgs) >= 1
         assert "Custom system prompt override" in system_msgs[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Readline import tests
+# ---------------------------------------------------------------------------
+
+
+class TestReadlineImport:
+    """Verify that the REPL module handles the readline import gracefully."""
+
+    def test_repl_module_imports_successfully(self):
+        """The REPL module must import without error."""
+        # Already imported at module scope — this confirms no crash
+        from A_kunpiloto.repl import REPL
+        assert REPL is not None
+
+    def test_readline_available_on_unix(self):
+        """On Linux/macOS, readline should be available after importing repl."""
+        import sys
+        if sys.platform == "win32":
+            pytest.skip("readline is not available on Windows")
+        # After importing A_kunpiloto.repl (done at top of file),
+        # readline should be in sys.modules
+        assert "readline" in sys.modules, (
+            "readline was not loaded. The try/except ImportError block "
+            "in repl.py may not be executing."
+        )
+
+    def test_repl_works_without_readline_subprocess(self):
+        """When readline is unavailable, the REPL module must still load.
+
+        Runs in a subprocess to get a clean Python environment where
+        readline can be suppressed before any import of repl.
+        """
+        import subprocess
+        import sys
+
+        code = """
+import sys
+import builtins
+
+# Suppress readline before any other import
+_real_import = builtins.__import__
+
+def _no_readline(name, *args, **kwargs):
+    if name == 'readline':
+        raise ImportError('Simulated readline unavailability')
+    return _real_import(name, *args, **kwargs)
+
+builtins.__import__ = _no_readline
+
+# Now import the REPL module — must not crash
+from A_kunpiloto.repl import REPL
+print(f'REPL class: {REPL}')
+assert REPL is not None
+print('OK: readline not available, but REPL loaded')
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=30,
+            cwd="/home/rongzhou/kodo/autish/A-kunpiloto",
+        )
+        assert result.returncode == 0, (
+            f"REPL failed to import without readline:\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "OK:" in result.stdout
