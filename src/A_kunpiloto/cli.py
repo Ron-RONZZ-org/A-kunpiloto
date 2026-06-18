@@ -1,12 +1,10 @@
 """CLI entry point for A-kunpiloto.
 
-Provides the ``A kunpiloto`` command with subcommands for the interactive
-REPL, MCP server, and provider configuration.
+Provides the ``A kunpiloto`` command with the interactive REPL.
 """
 
 from __future__ import annotations
 
-import sys
 from typing import Optional
 
 import typer
@@ -14,7 +12,6 @@ from typing_extensions import Annotated
 
 from A import info, error, tr_multi
 from A.core.ai_config import get_configured_provider
-from A.core.providers import LLMProvider
 
 from A_kunpiloto.config import KUNPILOTO_SCHEMA
 from A_kunpiloto.session import SessionState
@@ -200,69 +197,6 @@ def repl(
         r.run()
     except SystemExit:
         pass
-
-
-@app.command()
-def mcp(
-    provizanto: Annotated[
-        Optional[str],
-        typer.Option(
-            "--provizanto", "-p",
-            help=tr_multi(
-                "LLM-provizanto (nur por testado)",
-                "LLM provider (testing only)",
-                "Fournisseur LLM (test uniquement)",
-            ),
-        ),
-    ] = None,
-    modelo: Annotated[
-        Optional[str],
-        typer.Option(
-            "--modelo", "-m",
-            help=tr_multi(
-                "Modelo-nomo (apriora se ne specifita)",
-                "Model name (default if not specified)",
-                "Nom du modèle (défaut si non spécifié)",
-            ),
-        ),
-    ] = None,
-    transporto: Annotated[
-        str,
-        typer.Option(
-            "--transporto",
-            help=tr_multi(
-                "Transporta tipo (stdio, sse)",
-                "Transport type (stdio, sse)",
-                "Type de transport (stdio, sse)",
-            ),
-        ),
-    ] = "stdio",
-) -> None:
-    """Start the MCP server.
-
-    Exposes discovered A-module tools via the Model Context Protocol.
-    Connect any MCP client (Claude Desktop, opencode, etc.) to this
-    server to use A-ecosystem tools.
-
-    **Safety note:** The MCP server has no built-in safety gate.
-    Write operations (aldoni, modifi, forigi) execute without
-    confirmation. Use the ``repl`` command for safe interaction.
-    """
-    session = _build_session(
-        provider_type=provizanto,
-        model=modelo,
-    )
-
-    from A_kunpiloto.mcp import run_mcp_server
-
-    try:
-        run_mcp_server(
-            registry=session.registry,
-            transport=transporto,
-        )
-    except ImportError as exc:
-        error(str(exc))
-        raise typer.Exit(1) from exc
 
 
 # Allow running as script
