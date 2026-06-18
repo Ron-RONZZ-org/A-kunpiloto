@@ -37,6 +37,55 @@ class TestFormatArgs:
         result = format_args_for_cli({"my_param": "val"})
         assert "--my-param" in result
 
+    # ------------------------------------------------------------------
+    # option_flags (actual CLI flag vs. derived Python name)
+    # ------------------------------------------------------------------
+
+    def test_option_flags_uses_provided_flag(self):
+        """When option_flags is given, the actual CLI flag is used."""
+        result = format_args_for_cli(
+            {"from_addr": "a@b.com"},
+            option_flags={"from_addr": "--from"},
+        )
+        assert "--from" in result
+        assert "--from-addr" not in result
+
+    def test_option_flags_falls_back_without_mapping(self):
+        """A param not in option_flags derives from its Python name."""
+        result = format_args_for_cli(
+            {"unknown_param": "val"},
+            option_flags={"other": "--other"},
+        )
+        assert "--unknown-param" in result
+
+    def test_option_flags_boolean_true(self):
+        """Boolean True uses the actual flag from option_flags."""
+        result = format_args_for_cli(
+            {"unread": True},
+            option_flags={"unread": "--nelegita"},
+        )
+        assert "--nelegita" in result
+        assert "--unread" not in result
+
+    def test_option_flags_boolean_false_uses_no_prefix(self):
+        """Boolean False derives --no- from the actual flag."""
+        result = format_args_for_cli(
+            {"nur_ne_legitaj": False},
+            option_flags={"nur_ne_legitaj": "--nur-ne-legitaj"},
+        )
+        assert "--no-nur-ne-legitaj" in result
+
+    def test_option_flags_positional_unaffected(self):
+        """Positional params should not be affected by option_flags."""
+        result = format_args_for_cli(
+            {"query": "hello", "limit": 10},
+            positional_params=["query"],
+            option_flags={"limit": "--limo"},
+        )
+        assert "hello" in result  # positional, no flag
+        assert "--limo" in result
+        assert "10" in result
+
 
 class TestExecuteToolCall:
     def test_unknown_tool_entry_returns_error(self, registry):
@@ -106,7 +155,7 @@ class TestFormatStructuredError:
             description="test",
         )
         result = format_structured_error(entry, "Error: No such command 'bad'.")
-        assert "does not have that command" in result
+        assert "could not be found" in result
         assert "testmod" in result
 
     def test_missing_argument(self):
