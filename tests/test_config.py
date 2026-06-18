@@ -10,6 +10,8 @@ import pytest
 from A_kunpiloto.config import (
     DEFAULT_SYSTEM_PROMPT,
     commands_dir,
+    config_path,
+    ensure_config,
     load_system_prompt,
     system_prompt_path,
 )
@@ -109,3 +111,91 @@ class TestLoadSystemPrompt:
         monkeypatch.setenv("A_DIR", str(tmp_path))
         load_system_prompt()
         assert system_prompt_path().parent.is_dir()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Config file auto-seeding tests
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestConfigPath:
+    def test_config_path_under_kunpiloto(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        cp = config_path()
+        assert "kunpiloto" in str(cp)
+        assert cp.name == "config.toml"
+
+    def test_config_path_ends_correctly(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        cp = config_path()
+        assert str(cp).endswith("kunpiloto/config.toml")
+
+
+class TestEnsureConfig:
+    def test_seeds_config_when_nonexistent(self, monkeypatch, tmp_path):
+        """Should create config.toml from shipped defaults when none exists."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        result = ensure_config()
+        assert result is not None
+        assert result.exists()
+        assert result.name == "config.toml"
+        content = result.read_text(encoding="utf-8")
+        assert "write_always_allowed_directories" in content
+        assert "/tmp/A/kunpiloto/**" in content
+
+    def test_does_not_overwrite_existing_config(self, monkeypatch, tmp_path):
+        """Should NOT overwrite a config the user has edited."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        cp = config_path()
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        cp.write_text('write_always_allowed_directories = ["/custom/path/**"]\n', encoding="utf-8")
+        original_content = cp.read_text(encoding="utf-8")
+
+        ensure_config()
+        assert cp.read_text(encoding="utf-8") == original_content
+        assert "/custom/path" in cp.read_text(encoding="utf-8")
+
+    def test_seeded_config_is_valid_toml(self, monkeypatch, tmp_path):
+        """The seeded config.toml must parse as valid TOML."""
+        import tomllib
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        ensure_config()
+        cp = config_path()
+        with open(cp, "rb") as f:
+            data = tomllib.load(f)
+        assert "write_always_allowed_directories" in data
+        assert isinstance(data["write_always_allowed_directories"], list)
+        assert "read_always_allowed_directories" in data
+        assert isinstance(data["read_always_allowed_directories"], list)
+
+    def test_seeded_write_allowlist_has_temp_dir(self, monkeypatch, tmp_path):
+        """Default write allowlist must include /tmp/A/kunpiloto/**."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        ensure_config()
+        cp = config_path()
+        with open(cp, "rb") as f:
+            import tomllib
+            data = tomllib.load(f)
+        assert "/tmp/A/kunpiloto/**" in data["write_always_allowed_directories"]
+
+    def test_seeded_read_allowlist_has_tmp(self, monkeypatch, tmp_path):
+        """Default read allowlist must include /tmp/**."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        ensure_config()
+        cp = config_path()
+        with open(cp, "rb") as f:
+            import tomllib
+            data = tomllib.load(f)
+        assert "/tmp/**" in data["read_always_allowed_directories"]
+
+    def test_ensure_config_creates_parent_dir(self, monkeypatch, tmp_path):
+        """Parent directory should be created automatically."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        ensure_config()
+        assert config_path().parent.is_dir()
+
+    def test_ensure_config_also_seeds_system_prompt(self, monkeypatch, tmp_path):
+        """ensure_config should also seed the system prompt."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        ensure_config()
+        assert system_prompt_path().exists()
