@@ -16,23 +16,28 @@ from A_kunpiloto.tools._base import (
     ToolEntry,
     build_tool_schema,
     is_write_command,
+    normalize_tool_name,
 )
 
 
 def _resolve_command_name(cmd_info: CommandInfo) -> str:
     """Get the effective command name from a CommandInfo.
 
+    The returned name is normalized to ASCII to ensure it matches
+    the OpenAI/DeepSeek function name pattern ``^[a-zA-Z0-9_-]+$``.
+
     Args:
         cmd_info: The CommandInfo object.
 
     Returns:
-        The command name string.
+        The command name string (ASCII-safe).
     """
+    raw = "unnamed"
     if cmd_info.name:
-        return cmd_info.name
-    if cmd_info.callback:
-        return cmd_info.callback.__name__.replace("_", "-")
-    return "unnamed"
+        raw = cmd_info.name
+    elif cmd_info.callback:
+        raw = cmd_info.callback.__name__
+    return normalize_tool_name(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +166,11 @@ class ToolRegistry:
             if sub_app is None:
                 continue
             has_commands = True
+            clean_name = normalize_tool_name(name)
             self._walk_typer_app(
                 app=sub_app,
                 module_name=module_name,
-                prefix=f"{prefix}_{name}",
+                prefix=f"{prefix}_{clean_name}",
                 args_prefix=[*args_prefix, name],
             )
 
@@ -196,7 +202,7 @@ class ToolRegistry:
             args_prefix: CLI arg prefix.
         """
         command_name = _resolve_command_name(cmd_info)
-        full_name = f"{prefix}_{command_name}"
+        full_name = normalize_tool_name(f"{prefix}_{command_name}")
 
         if cmd_info.callback is None:
             return
@@ -282,7 +288,7 @@ class ToolRegistry:
         if callback is None:
             return
 
-        tool_name = prefix
+        tool_name = normalize_tool_name(prefix)
         schema, positional_params = build_tool_schema(
             callback=callback,
             tool_name=tool_name,

@@ -6,6 +6,7 @@ Shared between registry (schema generation) and executor (execution).
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass, field
 from typing import Any, get_type_hints
 
@@ -213,3 +214,62 @@ def build_tool_schema(
         schema["function"]["parameters"]["required"] = required
 
     return schema, positional
+
+
+# ---------------------------------------------------------------------------
+# Tool name sanitization
+# ---------------------------------------------------------------------------
+
+# Mapping of non-ASCII characters to ASCII equivalents for tool names.
+# OpenAI/DeepSeek require function names to match ^[a-zA-Z0-9_-]+$.
+_DIACRITIC_MAP: dict[str, str] = {
+    # Esperanto
+    "ĉ": "c", "Ĉ": "C",
+    "ĝ": "g", "Ĝ": "G",
+    "ĥ": "h", "Ĥ": "H",
+    "ĵ": "j", "Ĵ": "J",
+    "ŝ": "s", "Ŝ": "S",
+    "ŭ": "u", "Ŭ": "U",
+    # Common European diacritics
+    "à": "a", "á": "a", "â": "a", "ã": "a", "ä": "a", "å": "a",
+    "è": "e", "é": "e", "ê": "e", "ë": "e",
+    "ì": "i", "í": "i", "î": "i", "ï": "i",
+    "ò": "o", "ó": "o", "ô": "o", "õ": "o", "ö": "o",
+    "ù": "u", "ú": "u", "û": "u", "ü": "u",
+    "ý": "y", "ÿ": "y",
+    "À": "A", "Á": "A", "Â": "A", "Ã": "A", "Ä": "A", "Å": "A",
+    "È": "E", "É": "E", "Ê": "E", "Ë": "E",
+    "Ì": "I", "Í": "I", "Î": "I", "Ï": "I",
+    "Ò": "O", "Ó": "O", "Ô": "O", "Õ": "O", "Ö": "O",
+    "Ù": "U", "Ú": "U", "Û": "U", "Ü": "U",
+    "Ý": "Y",
+    "ç": "c", "Ç": "C",
+    "ñ": "n", "Ñ": "N",
+}
+
+# Compiled pattern matching any character not in [a-zA-Z0-9_-]
+_INVALID_CHAR = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def normalize_tool_name(name: str) -> str:
+    """Sanitize a tool name for LLM function calling APIs.
+
+    Strips Esperanto and common diacritics, then replaces any remaining
+    non-ASCII or special characters with underscores.
+
+    Args:
+        name: The raw tool name (e.g. ``"sistemo_particio_ŝrumpi"``).
+
+    Returns:
+        Sanitized name (e.g. ``"sistemo_particio_srumpi"``).
+    """
+    # Step 1: Replace known diacritics
+    result = "".join(_DIACRITIC_MAP.get(c, c) for c in name)
+    # Step 2: Replace any remaining non-ASCII/special chars with underscore
+    result = _INVALID_CHAR.sub("_", result)
+    # Step 3: Collapse multiple underscores
+    while "__" in result:
+        result = result.replace("__", "_")
+    # Step 4: Strip leading/trailing underscores
+    result = result.strip("_")
+    return result
