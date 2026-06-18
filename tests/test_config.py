@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -44,8 +45,10 @@ class TestSystemPromptPath:
 
 class TestLoadSystemPrompt:
     def test_returns_default_when_no_file(self, monkeypatch, tmp_path):
+        """Without any file or shipped resource, must fall back to hardcoded default."""
         monkeypatch.setenv("A_DIR", str(tmp_path))
-        prompt = load_system_prompt()
+        with patch("A_kunpiloto.config._read_shipped", return_value=None):
+            prompt = load_system_prompt()
         assert prompt == DEFAULT_SYSTEM_PROMPT
 
     def test_returns_file_content_when_exists(self, monkeypatch, tmp_path):
@@ -63,13 +66,15 @@ class TestLoadSystemPrompt:
     def test_returns_default_when_file_is_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("A_DIR", str(tmp_path))
         _create_system_prompt(tmp_path, "   \n  \n  ")
-        prompt = load_system_prompt()
+        with patch("A_kunpiloto.config._read_shipped", return_value=None):
+            prompt = load_system_prompt()
         assert prompt == DEFAULT_SYSTEM_PROMPT
 
     def test_returns_default_when_only_whitespace(self, monkeypatch, tmp_path):
         monkeypatch.setenv("A_DIR", str(tmp_path))
         _create_system_prompt(tmp_path, "\t  \n  \n  ")
-        prompt = load_system_prompt()
+        with patch("A_kunpiloto.config._read_shipped", return_value=None):
+            prompt = load_system_prompt()
         assert prompt == DEFAULT_SYSTEM_PROMPT
 
     def test_multiline_content(self, monkeypatch, tmp_path):
@@ -86,3 +91,21 @@ class TestLoadSystemPrompt:
         prompt = load_system_prompt()
         assert prompt != DEFAULT_SYSTEM_PROMPT
         assert prompt == "Custom prompt"
+
+    def test_auto_seeds_shipped_default_on_first_run(self, monkeypatch, tmp_path):
+        """When no user file exists, the shipped default should be auto-seeded."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        prompt = load_system_prompt()
+        # Should return the shipped content, not the hardcoded fallback
+        assert prompt != DEFAULT_SYSTEM_PROMPT
+        assert len(prompt) > 100
+        # Should have created the file on disk
+        assert system_prompt_path().exists()
+        disk_content = system_prompt_path().read_text(encoding="utf-8").strip()
+        assert disk_content == prompt
+
+    def test_auto_seed_creates_config_dir(self, monkeypatch, tmp_path):
+        """The config directory should be created when auto-seeding."""
+        monkeypatch.setenv("A_DIR", str(tmp_path))
+        load_system_prompt()
+        assert system_prompt_path().parent.is_dir()

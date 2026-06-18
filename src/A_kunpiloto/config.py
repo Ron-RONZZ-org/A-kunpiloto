@@ -7,6 +7,9 @@ Users can customise the system prompt by placing a file at::
 
     ~/.config/A/kunpiloto/system_prompt.md
 
+On first run (when no file exists) a shipped default is automatically
+copied to that location so the user can edit it.
+
 Custom slash-commands live in::
 
     ~/.config/A/kunpiloto/commands/*.md
@@ -14,8 +17,10 @@ Custom slash-commands live in::
 
 from __future__ import annotations
 
+import importlib.resources as ilr
 from pathlib import Path
 
+from A import error as log_error
 from A.core.config import ConfigSchema
 from A.core.paths import config_dir
 
@@ -25,6 +30,9 @@ from A.core.paths import config_dir
 
 SYSTEM_PROMPT_FILENAME = "system_prompt.md"
 COMMANDS_DIRNAME = "commands"
+
+# Names of the shipped default files (package data inside ``A_kunpiloto``).
+_SHIPPED_SYSTEM_PROMPT = "system_prompt.md"
 
 
 def _kunpiloto_dir() -> Path:
@@ -54,21 +62,73 @@ def commands_dir() -> Path:
     return _kunpiloto_dir() / COMMANDS_DIRNAME
 
 
-def load_system_prompt() -> str:
-    """Load the system prompt from the user config dir, or return the default.
+def _read_shipped(filename: str) -> str | None:
+    """Read a shipped package-data file from the ``A_kunpiloto`` package.
 
-    If ``~/.config/A/kunpiloto/system_prompt.md`` exists, its contents
-    (after stripping leading/trailing whitespace) are returned.
-    Otherwise :data:`DEFAULT_SYSTEM_PROMPT` is used.
+    Args:
+        filename: Name of the file (e.g. ``"system_prompt.md"``).
+
+    Returns:
+        The file contents, or ``None`` if the file cannot be read.
+    """
+    try:
+        ref = ilr.files("A_kunpiloto").joinpath(filename)
+        return ref.read_text(encoding="utf-8")
+    except (FileNotFoundError, TypeError, ModuleNotFoundError, OSError) as exc:
+        log_error(
+            f"Ne povis legi enpakitan {filename}: {exc}",
+        )
+        return None
+
+
+def _seed_default_prompt() -> str | None:
+    """Copy the shipped system prompt to the config dir if it doesn't exist.
+
+    Returns the prompt content (from the shipped file) or ``None`` if
+    neither the shipped file nor the fallback is available.
+
+    The config directory is created if necessary.
+    """
+    shipped = _read_shipped(_SHIPPED_SYSTEM_PROMPT)
+    if shipped is None:
+        return None
+
+    path = system_prompt_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(shipped, encoding="utf-8")
+    except OSError:
+        pass  # Non-critical — we still return the content from memory
+    return shipped
+
+
+def load_system_prompt() -> str:
+    """Load the system prompt, auto-seeding the shipped default on first run.
+
+    Resolution order:
+
+    1. If ``~/.config/A/kunpiloto/system_prompt.md`` exists and is
+       non-empty → return its content.
+    2. Otherwise, copy the shipped ``system_prompt.md`` (bundled with
+       the package) to that location and return its content.
+    3. Fall back to :data:`DEFAULT_SYSTEM_PROMPT`.
 
     Returns:
         The system prompt string.
     """
+    # 1. User-customised file
     path = system_prompt_path()
     if path.exists():
         content = path.read_text(encoding="utf-8").strip()
         if content:
             return content
+
+    # 2. Shipped default → auto-seed on first run
+    seeded = _seed_default_prompt()
+    if seeded is not None:
+        return seeded.strip()
+
+    # 3. Hardcoded fallback
     return DEFAULT_SYSTEM_PROMPT
 
 

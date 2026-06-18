@@ -28,6 +28,7 @@ kunpiloto = "A_kunpiloto.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/A_kunpiloto"]
+include = ["src/A_kunpiloto/system_prompt.md"]
 
 [tool.uv.sources]
 a-core = { path = "../A-core", editable = true }
