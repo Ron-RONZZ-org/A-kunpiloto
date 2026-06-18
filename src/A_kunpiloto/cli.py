@@ -13,6 +13,7 @@ from typing_extensions import Annotated
 from A import info, error, tr_multi
 from A.core.ai_config import get_configured_provider
 
+from A_kunpiloto.commands import load_commands
 from A_kunpiloto.config import KUNPILOTO_SCHEMA
 from A_kunpiloto.session import SessionState
 from A_kunpiloto.tools.registry import ToolRegistry
@@ -186,11 +187,20 @@ def repl(
 
     from A_kunpiloto.repl import REPL
 
+    custom_commands = load_commands()
+    if custom_commands:
+        info(tr_multi(
+            f"Ŝargis {len(custom_commands)} proprajn komandojn.",
+            f"Loaded {len(custom_commands)} custom commands.",
+            f"Chargé {len(custom_commands)} commandes personnalisées.",
+        ))
+
     r = REPL(
         provider=session.provider,
         registry=session.registry,
         max_turns=maks_pasoj,
         temperature=temperaturo,
+        custom_commands=custom_commands,
     )
 
     try:
