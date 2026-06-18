@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 
@@ -40,7 +41,6 @@ class ThinkingSpinner:
             self._thread.join(timeout=1)
             self._thread = None
         # Clear the line
-        import sys
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
