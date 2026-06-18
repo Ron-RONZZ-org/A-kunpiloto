@@ -2,16 +2,21 @@
 
 Write operations (aldoni, modifi, forigi, etc.) require explicit user
 confirmation before execution. Read operations execute freely.
+
+File access (write_file, read_file) also requires confirmation for
+paths outside the configured allowlist.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.box import SIMPLE as BOX_SIMPLE
+from rich.text import Text
 
 from A import tr_multi
 
@@ -125,6 +130,98 @@ def confirm_write_operation(
         "Ĉu daŭrigi? [y/N]: ",
         "Continue? [y/N]: ",
         "Continuer ? [y/N] : ",
+    )
+
+    try:
+        response = input(prompt).strip().lower()
+        return response in ("y", "yes", "jes")
+    except (EOFError, KeyboardInterrupt):
+        _console.print()
+        return False
+
+
+# ---------------------------------------------------------------------------
+# File access confirmation
+# ---------------------------------------------------------------------------
+
+
+def _build_file_preview(
+    path: Path,
+    operation: str = "write",
+    details: str = "",
+) -> Panel:
+    """Build a Rich Panel showing a file access preview.
+
+    Args:
+        path: The resolved file path.
+        operation: "read" or "write".
+        details: Extra info (content preview, size, etc.).
+
+    Returns:
+        A Rich Panel ready for rendering.
+    """
+    op_label = tr_multi(
+        "Skribi" if operation == "write" else "Legi",
+        "Write" if operation == "write" else "Read",
+        "Écrire" if operation == "write" else "Lire",
+    )
+    exists_marker = "✓" if path.exists() else "✗"
+    exists_label = tr_multi(
+        "Ekzistas" if path.exists() else "Ne ekzistas",
+        "Exists" if path.exists() else "Does not exist",
+        "Existe" if path.exists() else "N'existe pas",
+    )
+
+    table = Table(show_header=False, box=BOX_SIMPLE)
+    table.add_column(tr_multi("Ŝlosilo", "Key", "Clé"), style="cyan", no_wrap=True)
+    table.add_column(tr_multi("Valoro", "Value", "Valeur"), style="white")
+
+    table.add_row(
+        tr_multi("Operacio", "Operation", "Opération"),
+        f"{op_label} [dim]{path}[/dim]",
+    )
+    table.add_row(
+        tr_multi("Stato", "Status", "Statut"),
+        f"{exists_marker} {exists_label}",
+    )
+
+    if details:
+        table.add_row(
+            tr_multi("Detaloj", "Details", "Détails"),
+            details[:200],
+        )
+
+    border = "yellow" if operation == "read" else "red"
+    return Panel(
+        table,
+        title=f"[bold {border}]⚠️  {op_label} dosieron[/bold {border}]",
+        border_style=border,
+        padding=(1, 2),
+    )
+
+
+def confirm_file_access(
+    path: Path,
+    operation: str = "write",
+    details: str = "",
+) -> bool:
+    """Show file access preview and ask for confirmation.
+
+    Args:
+        path: The resolved file path.
+        operation: "read" or "write".
+        details: Extra info (content preview, size, etc.).
+
+    Returns:
+        True if the user confirmed, False otherwise.
+    """
+    _console.print()
+    _console.print(_build_file_preview(path, operation, details))
+
+    prompt = tr_multi(
+        "Ĉu permesi dosieran aliron? [y/N]: ",
+        "Allow file access? [y/N]: ",
+        "Autoriser l'accès au fichier ? [y/N] : ",
     )
 
     try:

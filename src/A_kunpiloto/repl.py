@@ -38,6 +38,12 @@ from A_kunpiloto.result_store import (
 )
 from A_kunpiloto.tools.executor import execute_tool_call
 from A_kunpiloto.tools.registry import ToolRegistry
+from A_kunpiloto.tools.file_tools import (
+    READ_FILE_SCHEMA,
+    WRITE_FILE_SCHEMA,
+    handle_read_file,
+    handle_write_file,
+)
 from A_kunpiloto.tools.safety import confirm_write_operation
 from A_kunpiloto._display import (
     display_assistant,
@@ -184,6 +190,7 @@ class REPL:
         max_turns: int = 15,
         temperature: float = 0.7,
         custom_commands: list[CommandDef] | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the REPL.
 
@@ -193,21 +200,23 @@ class REPL:
             max_turns: Maximum tool-calling rounds per conversation turn.
             temperature: LLM temperature setting.
             custom_commands: Custom slash-commands loaded from disk.
+            config: The KUNPILOTO_SCHEMA config dict (for file tools).
         """
         self._provider = provider
         self._registry = registry
         self._max_turns = max_turns
         self._temperature = temperature
         self._custom_commands = custom_commands or []
+        self._config = config or {}
         self._history = self._build_history()
 
         # Result store for large tool outputs
         self._result_store = ResultStore()
-        # Register the built-in read_result tool
+        # Register built-in tools
         self._register_builtin_tools()
 
     def _register_builtin_tools(self) -> None:
-        """Register built-in tools (read_result, etc.) in the registry."""
+        """Register built-in tools (read_result, write_file, read_file)."""
         from functools import partial
 
         self._registry.register_builtin(
@@ -218,6 +227,30 @@ class REPL:
             ),
             schema=READ_RESULT_SCHEMA,
             handler=partial(handle_read_result, self._result_store),
+        )
+
+        self._registry.register_builtin(
+            name="write_file",
+            description=(
+                "Write text content to a file on disk. "
+                "Use for saving generated content, configs, scripts, or temp files. "
+                "Paths in the configured allowlist bypass confirmation; "
+                "others prompt the user for permission."
+            ),
+            schema=WRITE_FILE_SCHEMA,
+            handler=partial(handle_write_file, config=self._config),
+        )
+
+        self._registry.register_builtin(
+            name="read_file",
+            description=(
+                "Read text content from a file on disk. "
+                "Use for verification, checking written output, or reading configs. "
+                "Paths in the configured allowlist bypass confirmation; "
+                "others prompt the user for permission."
+            ),
+            schema=READ_FILE_SCHEMA,
+            handler=partial(handle_read_file, config=self._config),
         )
 
     # ------------------------------------------------------------------
@@ -525,9 +558,26 @@ class REPL:
         if desc_lines:
             extra = "\n\nModule descriptions:\n" + "\n".join(desc_lines)
 
+        # Append file tool descriptions dynamically
+        file_tools_desc = (
+            "\n\nBUILT-IN FILE TOOLS:\n"
+            "- write_file: Write text content to a file on disk.\n"
+            "  Parameters: file_path (required), content (required),\n"
+            "  mode (optional, 'overwrite' or 'append', default 'overwrite').\n"
+            "  Use this when you need to save data to a file (scripts, configs, exports).\n"
+            "  Paths in the configured allowlist bypass confirmation;\n"
+            "  other paths prompt the user.\n"
+            "- read_file: Read text content from a file on disk.\n"
+            "  Parameters: file_path (required),\n"
+            "  start_line (optional integer, 1-indexed),\n"
+            "  end_line (optional integer, max 500 per call).\n"
+            "  Use this to verify written output or read configuration files.\n"
+        )
+
         system = (
             f"{base_prompt}\n\n"
             f"Installed modules: {modules_str}"
             f"{extra}"
+            f"{file_tools_desc}"
         )
         return ConversationHistory(system)

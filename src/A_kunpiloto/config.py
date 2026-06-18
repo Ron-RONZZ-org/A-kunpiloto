@@ -157,6 +157,28 @@ KUNPILOTO_SCHEMA = ConfigSchema("kunpiloto", {
         "default": 0.7,
         "help": "Genera temperaturo (0.0 = determinisma, 2.0 = kreema)",
     },
+    # File tool configuration
+    "write_always_allowed_directories": {
+        "type": "str",
+        "default": [],
+        "help": (
+            "Allowlistaj dosierujoj por write_file (globo-ŝablonoj, "
+            "ekz. /tmp/A/**, ~/Documents/A/*)"
+        ),
+    },
+    "write_max_file_size": {
+        "type": "int",
+        "default": 10_485_760,  # 10 MB
+        "help": "Maksimuma dosiergrandeco por write_file (bajtoj)",
+    },
+    "read_always_allowed_directories": {
+        "type": "str",
+        "default": [],
+        "help": (
+            "Allowlistaj dosierujoj por read_file (globo-ŝablonoj). "
+            "Skrib-allowlistaj dosierujoj estas aŭtomate aldonitaj."
+        ),
+    },
 })
 
 DEFAULT_SYSTEM_PROMPT = (
