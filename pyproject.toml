@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "A-kunpiloto"
+version = "0.1.0"
+description = "A — Interactive AI copilot for the A-ecosystem"
+readme = "README.md"
+license = "GPL-3.0-only"
+authors = [{name = "Rong ZHOU", email = "rong.zhou6@etu.univ-lorraine.fr"}]
+requires-python = ">=3.11"
+dependencies = [
+    "A-core>=0.1.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.4.0",
+]
+mcp = ["mcp>=1.0.0"]
+
+[project.entry-points."A.commands"]
+kunpiloto = "A_kunpiloto.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/A_kunpiloto"]
+
+[tool.uv.sources]
+a-core = { path = "../A-core", editable = true }
+
+[tool.poetry]
+name = "A-kunpiloto"
+version = "0.1.0"
+description = "A — Interactive AI copilot for the A-ecosystem"
+authors = ["Rong ZHOU <rong.zhou6@etu.univ-lorraine.fr>"]
+readme = "README.md"
+license = "GPL-3.0-only"
+packages = [{ include = "A_kunpiloto", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+A-core = { path = "../A-core" }
+typer = { version = ">=0.12", python = "<4.0" }
+rich = ">=13.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8"
+typer = { version = ">=0.12", python = "<4.0" }
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
