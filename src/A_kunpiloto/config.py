@@ -2,11 +2,75 @@
 
 Uses A-core's ConfigSchema to derive CLI options + TOML persistence
 from a single declarative schema.
+
+Users can customise the system prompt by placing a file at::
+
+    ~/.config/A/kunpiloto/system_prompt.md
+
+Custom slash-commands live in::
+
+    ~/.config/A/kunpiloto/commands/*.md
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from A.core.config import ConfigSchema
+from A.core.paths import config_dir
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT_FILENAME = "system_prompt.md"
+COMMANDS_DIRNAME = "commands"
+
+
+def _kunpiloto_dir() -> Path:
+    """Return the A-kunpiloto config directory.
+
+    Returns:
+        ``~/.config/A/kunpiloto/`` (or ``$A_DIR/config/kunpiloto/``).
+    """
+    return config_dir() / "kunpiloto"
+
+
+def system_prompt_path() -> Path:
+    """Return the path to the user-modifiable system prompt file.
+
+    Returns:
+        ``~/.config/A/kunpiloto/system_prompt.md``.
+    """
+    return _kunpiloto_dir() / SYSTEM_PROMPT_FILENAME
+
+
+def commands_dir() -> Path:
+    """Return the path to the custom commands directory.
+
+    Returns:
+        ``~/.config/A/kunpiloto/commands/``.
+    """
+    return _kunpiloto_dir() / COMMANDS_DIRNAME
+
+
+def load_system_prompt() -> str:
+    """Load the system prompt from the user config dir, or return the default.
+
+    If ``~/.config/A/kunpiloto/system_prompt.md`` exists, its contents
+    (after stripping leading/trailing whitespace) are returned.
+    Otherwise :data:`DEFAULT_SYSTEM_PROMPT` is used.
+
+    Returns:
+        The system prompt string.
+    """
+    path = system_prompt_path()
+    if path.exists():
+        content = path.read_text(encoding="utf-8").strip()
+        if content:
+            return content
+    return DEFAULT_SYSTEM_PROMPT
+
 
 # ---------------------------------------------------------------------------
 # Schema

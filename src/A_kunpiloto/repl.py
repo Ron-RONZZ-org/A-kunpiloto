@@ -16,7 +16,12 @@ from A import info, error as log_error, tr_multi
 
 from A.core.providers import LLMProvider, ToolCall
 
-from A_kunpiloto.config import DEFAULT_SYSTEM_PROMPT
+from A_kunpiloto.commands import (
+    CommandDef,
+    find_command,
+    resolve_template,
+)
+from A_kunpiloto.config import load_system_prompt
 from A_kunpiloto.history import ConversationHistory
 from A_kunpiloto.tools.executor import execute_tool_call
 from A_kunpiloto.tools.registry import ToolRegistry
@@ -79,35 +84,58 @@ WELCOME = tr_multi(
 """,
 )
 
-HELP_TEXT = tr_multi(
+def _help_text(custom_commands: list[CommandDef]) -> str:
+    """Build the REPL help text, optionally including custom commands.
+
+    Args:
+        custom_commands: List of available custom commands.
+
+    Returns:
+        Localized help string.
     """
+    custom_lines = ""
+    if custom_commands:
+        lines = []
+        for cmd in custom_commands:
+            desc = cmd.description or tr_multi(
+                "(sen priskribo)", "(no description)", "(aucune description)",
+            )
+            lines.append(f"  /{cmd.name:<12} {desc}")
+        custom_lines = "\n\n" + tr_multi(
+            "Propraj komandoj:",
+            "Custom commands:",
+            "Commandes personnalisées :",
+        ) + "\n" + "\n".join(lines)
+
+    return tr_multi(
+        f"""
 Haveblaj komandoj:
   /exit, /quit  - Eliri
   /clear        - Komenci novan konversacion
   /help         - Montri ĉi tiun helpon
-  /tools        - Listi ĉiujn haveblajn ilojn
+  /tools        - Listi ĉiujn haveblajn ilojn{custom_lines}
 
 Simple: tajpu vian peton en natura lingvo.
 """,
-    """
+        f"""
 Available commands:
   /exit, /quit  - Exit
   /clear        - Start a new conversation
   /help         - Show this help
-  /tools        - List all available tools
+  /tools        - List all available tools{custom_lines}
 
 Simply type your request in natural language.
 """,
-    """
+        f"""
 Commandes disponibles :
   /exit, /quit  - Quitter
   /clear        - Nouvelle conversation
   /help         - Afficher cette aide
-  /tools        - Lister tous les outils
+  /tools        - Lister tous les outils{custom_lines}
 
 Tapez simplement votre demande en langage naturel.
 """,
-)
+    )
 
 WRITE_CANCELLED = tr_multi(
     "Operacio nuligita de uzanto.",
@@ -142,6 +170,7 @@ class REPL:
         registry: ToolRegistry,
         max_turns: int = 15,
         temperature: float = 0.7,
+        custom_commands: list[CommandDef] | None = None,
     ) -> None:
         """Initialize the REPL.
 
@@ -150,11 +179,13 @@ class REPL:
             registry: Tool registry with discovered modules.
             max_turns: Maximum tool-calling rounds per conversation turn.
             temperature: LLM temperature setting.
+            custom_commands: Custom slash-commands loaded from disk.
         """
         self._provider = provider
         self._registry = registry
         self._max_turns = max_turns
         self._temperature = temperature
+        self._custom_commands = custom_commands or []
         self._history = self._build_history()
 
     # ------------------------------------------------------------------
@@ -355,12 +386,24 @@ class REPL:
             )
 
         elif cmd in ("/help", "/h"):
-            _console.print(HELP_TEXT)
+            _console.print(_help_text(self._custom_commands))
 
         elif cmd in ("/tools", "/iloj"):
             display_tool_list(self._registry)
 
         else:
+            # Try custom slash-commands
+            parts = text[1:].strip().split()  # strip leading '/', split
+            cmd_name = parts[0].lower() if parts else ""
+            cmd_args = parts[1:] if len(parts) > 1 else []
+
+            matched = find_command(self._custom_commands, cmd_name)
+            if matched is not None:
+                resolved = resolve_template(matched.template, cmd_args)
+                self._history.add_user(resolved)
+                self._process_turn()
+                return
+
             _console.print(
                 tr_multi(
                     f"[red]Nekonata komando: {cmd}[/red]",
@@ -383,8 +426,6 @@ class REPL:
             A new ConversationHistory instance.
         """
         modules = ", ".join(self._registry.module_names) if self._registry.module_names else "(neniu)"
-        system = (
-            f"{DEFAULT_SYSTEM_PROMPT}\n\n"
-            f"Installed modules: {modules}"
-        )
+        base_prompt = load_system_prompt()
+        system = f"{base_prompt}\n\nInstalled modules: {modules}"
         return ConversationHistory(system)
