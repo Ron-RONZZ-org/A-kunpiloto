@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, get_type_hints
 
@@ -19,17 +20,18 @@ from typer.models import (
 
 @dataclass
 class ToolEntry:
-    """A single tool wrapping a CLI command.
+    """A single tool wrapping a CLI command (or a built-in handler).
 
     Attributes:
-        name: Canonical tool name (e.g. "vorto_aldoni").
-        module_name: Module name (e.g. "vorto").
+        name: Canonical tool name (e.g. "vorto_aldoni" or "read_result").
+        module_name: Module name (e.g. "vorto") or "_builtin" for built-ins.
         display_path: Human-readable path (e.g. "vorto aldoni").
         description: Short description for the LLM.
         schema: OpenAI-compatible tool schema dict (the full function object).
         is_write: Whether this command modifies data.
         args_prefix: CLI arg prefix (e.g. ["retposto", "sendi"]).
         positional_params: Names of positional (Argument) params, in order.
+        handler: Callable for built-in tools (None for CLI tools).
     """
     name: str
     module_name: str
@@ -39,6 +41,7 @@ class ToolEntry:
     is_write: bool = False
     args_prefix: list[str] = field(default_factory=list)
     positional_params: list[str] = field(default_factory=list)
+    handler: Callable[..., dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------

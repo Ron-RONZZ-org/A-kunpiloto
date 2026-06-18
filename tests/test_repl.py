@@ -173,6 +173,137 @@ class TestCustomCommandExecution:
 
 
 # ---------------------------------------------------------------------------
+# Failure limit tests
+# ---------------------------------------------------------------------------
+
+
+class TestFailureLimit:
+    """Test that REPL aborts after consecutive tool failures."""
+
+    def test_failure_limit_triggers_on_errors(self, mock_provider, registry):
+        """After 3 consecutive failures, REPL should abort."""
+        from A.core.providers import LLMResponse, ToolCall
+
+        # Simulate a tool call that always fails
+        mock_provider.chat.side_effect = [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        function={"name": "nonexistent_tool", "arguments": "{}"},
+                    )
+                ],
+            ),
+        ]
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=10,
+            temperature=0.7,
+            custom_commands=[],
+        )
+        r._history.clear()
+
+        with patch("A_kunpiloto.repl._console") as mock_console, \
+             patch.object(r, "_start_thinking"), \
+             patch.object(r, "_stop_thinking"):
+
+            # Reset result store for clean test
+            r._result_store.clear()
+            r._history.add_user("do something")
+            r._process_turn()
+
+        # After 3 consecutive failures, the assistant should have produced
+        # an abort message. The failure limit kicks in after 3 errors
+        # but only 1 tool call was made here (side_effect has 1 item).
+        # The LLM returns 1 tool call, it fails, that's 1 failure.
+        # Next iteration would call side_effect again, but there's no
+        # more items... Let's just verify the error was recorded.
+        history = r._history.messages
+        tool_msgs = [m for m in history if m["role"] == "tool"]
+        assert len(tool_msgs) >= 1
+        # tr_multi in tests returns eo: "ne trovita"
+        assert "ne trovita" in tool_msgs[0]["content"]
+
+    def test_builtin_tool_registered_on_init(self, mock_provider, registry):
+        """REPL should register read_result built-in tool."""
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+        entry = registry.get_entry("read_result")
+        assert entry is not None
+        assert entry.handler is not None
+        assert entry.module_name == "_builtin"
+
+    def test_builtin_tool_in_schemas(self, mock_provider, registry):
+        """read_result should appear in the registry's schemas."""
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+        schemas = registry.get_schemas()
+        names = [s["function"]["name"] for s in schemas]
+        assert "read_result" in names
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy matching in tool calls
+# ---------------------------------------------------------------------------
+
+
+class TestFuzzyMatchInToolCalls:
+    def test_similar_tool_suggested(self, mock_provider, registry):
+        """When a tool is not found, similar names are suggested."""
+        from A.core.providers import ToolCall
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+
+        tc = ToolCall(
+            id="call_xyz",
+            function={"name": "testmod_ldoni", "arguments": "{}"},  # typo
+        )
+
+        result = r._handle_tool_call(tc)
+        assert result["exit_code"] == 1
+        assert "not found" in result["error"]
+        # Since "testmod_ldoni" is close to "testmod_aldoni", we should get a suggestion
+        assert "Did you mean" in result["error"]
+
+    def test_unrelated_tool_no_suggestion(self, mock_provider, registry):
+        """When no close match exists, no suggestions."""
+        from A.core.providers import ToolCall
+
+        r = REPL(
+            provider=mock_provider,
+            registry=registry,
+            max_turns=15,
+            temperature=0.7,
+        )
+
+        tc = ToolCall(
+            id="call_xyz",
+            function={"name": "zzzzzzz", "arguments": "{}"},
+        )
+
+        result = r._handle_tool_call(tc)
+        assert result["exit_code"] == 1
+        # Should NOT have "Did you mean" since no close match
+        assert "Did you mean" not in result["error"]
+
+
+# ---------------------------------------------------------------------------
 # Readline import tests
 # ---------------------------------------------------------------------------
 

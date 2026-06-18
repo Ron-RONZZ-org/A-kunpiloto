@@ -79,3 +79,73 @@ class TestExecuteToolCall:
         with patch("importlib.metadata.entry_points", return_value=mock_entry_points):
             result = execute_tool_call(entry, {"nomo": "minimal"})
         assert result["exit_code"] == 0
+
+
+class TestFormatStructuredError:
+    def test_empty_stderr(self):
+        from A_kunpiloto.tools.executor import format_structured_error
+        from A_kunpiloto.tools.registry import ToolEntry
+
+        entry = ToolEntry(
+            name="test_ls",
+            module_name="testmod",
+            display_path="testmod ls",
+            description="test",
+        )
+        result = format_structured_error(entry, "")
+        assert "Unknown error" in result
+
+    def test_no_such_command(self):
+        from A_kunpiloto.tools.executor import format_structured_error
+        from A_kunpiloto.tools.registry import ToolEntry
+
+        entry = ToolEntry(
+            name="test_bad",
+            module_name="testmod",
+            display_path="testmod bad",
+            description="test",
+        )
+        result = format_structured_error(entry, "Error: No such command 'bad'.")
+        assert "does not have that command" in result
+        assert "testmod" in result
+
+    def test_missing_argument(self):
+        from A_kunpiloto.tools.executor import format_structured_error
+        from A_kunpiloto.tools.registry import ToolEntry
+
+        entry = ToolEntry(
+            name="test_ls",
+            module_name="testmod",
+            display_path="testmod ls",
+            description="test",
+        )
+        result = format_structured_error(entry, "Error: Missing argument 'UUID'.")
+        assert "Missing required" in result
+
+    def test_fallback_for_unknown_error(self):
+        from A_kunpiloto.tools.executor import format_structured_error
+        from A_kunpiloto.tools.registry import ToolEntry
+
+        entry = ToolEntry(
+            name="test_ls",
+            module_name="testmod",
+            display_path="testmod ls",
+            description="test",
+        )
+        result = format_structured_error(entry, "Something unique and weird happened.")
+        assert "Something unique" in result
+
+    def test_truncates_long_errors(self):
+        from A_kunpiloto.tools.executor import format_structured_error
+        from A_kunpiloto.tools.registry import ToolEntry
+
+        entry = ToolEntry(
+            name="test_ls",
+            module_name="testmod",
+            display_path="testmod ls",
+            description="test",
+        )
+        long_err = "x" * 1000
+        result = format_structured_error(entry, long_err)
+        assert len(result) < len(long_err)
+        assert "truncated" in result
