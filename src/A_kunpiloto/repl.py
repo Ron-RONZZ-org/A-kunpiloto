@@ -9,6 +9,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Enable GNU Readline line editing (arrow keys, home/end, Ctrl+A/E etc.)
+# for all input() calls in the REPL. Falls back gracefully on Windows.
+try:
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 from rich.console import Console
 from rich.prompt import Prompt
 
