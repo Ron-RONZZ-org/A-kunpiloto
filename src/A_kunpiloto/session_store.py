@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -47,14 +48,14 @@ def _sessions_path() -> Path:
 def generate_session_id() -> str:
     """Generate a unique, human-readable session ID.
 
-    Format: ``YYYYMMDD_HHMMSS_XXXX`` where XXXX is a hex suffix
-    derived from the microsecond for disambiguation.
+    Format: ``YYYYMMDD_HHMMSS_XXXX`` where XXXX is a 4-char hex
+    random suffix for disambiguation.
 
     Returns:
         A session ID string.
     """
     now = datetime.now()
-    suffix = f"{now.microsecond:06x}"[:4]
+    suffix = secrets.token_hex(2)  # 4 hex chars
     return now.strftime("%Y%m%d_%H%M%S") + f"_{suffix}"
 
 

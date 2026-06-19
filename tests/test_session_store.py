@@ -63,7 +63,9 @@ class TestGenerateSessionId:
 
     def test_sortable_chronologically(self):
         ids = [generate_session_id() for _ in range(5)]
-        assert ids == sorted(ids)  # Timestamps increase
+        # The timestamp portion (first 15 chars) should be non-decreasing
+        timestamps = [sid[:15] for sid in ids]
+        assert timestamps == sorted(timestamps)
 
 
 # ---------------------------------------------------------------------------

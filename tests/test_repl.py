@@ -441,24 +441,29 @@ class TestPasteDetection:
 class TestSessionCommands:
     """Test the /sessions and /resume slash commands."""
 
-    def test_sessions_empty(self, mock_provider, registry):
+    def test_sessions_empty(self, mock_provider, registry, tmp_path):
         """Listing sessions when none exist should show empty message."""
         from unittest.mock import patch
 
-        r = REPL(
-            provider=mock_provider,
-            registry=registry,
-            max_turns=15,
-            temperature=0.7,
-        )
+        session_file = tmp_path / "sessions.jsonl"
+        with patch(
+            "A_kunpiloto.session_store._sessions_path",
+            return_value=session_file,
+        ):
+            r = REPL(
+                provider=mock_provider,
+                registry=registry,
+                max_turns=15,
+                temperature=0.7,
+            )
 
-        with patch("A_kunpiloto.repl._console") as mock_console:
-            r._cmd_sessions()
+            with patch("A_kunpiloto.repl._console") as mock_console:
+                r._cmd_sessions()
 
-        # Should print a "no sessions" message
-        mock_console.print.assert_called_once()
-        text = str(mock_console.print.call_args[0][0])
-        assert "neniuj" in text.lower() or "no" in text.lower()
+            # Should print a "no sessions" message
+            mock_console.print.assert_called_once()
+            text = str(mock_console.print.call_args[0][0])
+            assert "neniuj" in text.lower() or "no" in text.lower()
 
     def test_sessions_with_data(self, mock_provider, registry, tmp_path):
         """Listing sessions with data should show them in a table."""
