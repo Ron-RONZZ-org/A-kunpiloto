@@ -248,24 +248,24 @@ def _is_llm_force_flag(flag: str) -> bool:
 def _injected_default_for_flag(flag: str, param_annotation: type) -> Any:
     """Return the sensible default value for a force-on flag.
 
-    Interactive-only flags (``--html``, ``--browser``) → ``False`` (don't open).
     Force-on flags (``--stdout``) → ``True`` (always print to stdout).
+    Interactive-only flags → ``None`` (skip injection; CLI default applies).
 
     Args:
         flag: The CLI flag string.
         param_annotation: The type annotation of the parameter.
 
     Returns:
-        The value to inject.
+        The value to inject, or ``None`` to skip injection.
     """
     if flag in _LLM_FORCE_FLAGS:
         if param_annotation is bool:
             return True
         return "true"  # string-typed force flags (unusual but safe)
-    # Interactive-only flags: disable by default
-    if param_annotation is bool:
-        return False
-    return ""
+    # Interactive-only flags: do NOT inject — CLI defaults handle them.
+    # Injecting False produces --no-<flag> which Typer may not recognise
+    # for parameters with short options (e.g. --html/-H).
+    return None
 
 
 def build_tool_schema(
@@ -321,10 +321,9 @@ def build_tool_schema(
                 # Filter or force options that are meaningless in copilot context
                 if _is_interactive_only_flag(flag) or _is_llm_force_flag(flag):
                     # Remove from schema — LLM should not see these
-                    # Injected default ensures correct CLI behaviour
-                    injected_defaults[param_name] = _injected_default_for_flag(
-                        flag, annotation,
-                    )
+                    default_val = _injected_default_for_flag(flag, annotation)
+                    if default_val is not None:
+                        injected_defaults[param_name] = default_val
                     continue
 
             properties[param_name] = prop_schema

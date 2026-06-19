@@ -157,9 +157,9 @@ def format_args_for_cli(
         if key in args:
             cli_args.append(str(args[key]))
 
-    # Then option-style args (skip positional params)
+    # Then option-style args (skip positional params and None values)
     for key, value in args.items():
-        if key in positional_set:
+        if key in positional_set or value is None:
             continue
 
         # Use the actual CLI flag if available, otherwise derive from param name
